@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+venv/
+
+generate_datasets/_archive/
+generate_datasets/spontaneous/*_results*.json
+generate_datasets/sycophancy/ays_multi_results*.json
+generate_datasets/sycophancy/answer_multi_results*.json
+generate_datasets/sycophancy/feedback_multi_results.json
+generate_datasets/sycophancy/sycophancy_probe_results.json
+generate_datasets/sycophancy/*.jsonl
+generate_datasets/game_lie/game_lie_multi_results.json
+generate_datasets/game_lie/results.json
+
+eval/results/*.pt

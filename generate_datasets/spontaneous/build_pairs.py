@@ -1,10 +1,10 @@
 """Build lie/truth pairs from multi-run spontaneous results.
 
-Input: multi_results.json (from infer.py — parsed_answers + model_responses per run)
-Output: depends on --strategy
+Input: multi_results_{model_tag}.json (from infer.py — parsed_answers + model_responses per run)
+Output: depends on --strategy; model_tag appended to stem when provided
 Strategies:
-  matched      — high-confidence pairs (correct >= min_correct), best-length pair -> spontaneous_lie_truth.json
-  inconsistent — any inconsistency, first correct + first incorrect -> spontaneous_inconsistent.json
+  matched      — high-confidence pairs (correct >= min_correct), best-length pair -> spontaneous_lie_truth_{model_tag}.json
+  inconsistent — any inconsistency, first correct + first incorrect -> spontaneous_inconsistent_{model_tag}.json
   validation   — produces validation set (>=min_correct, length diff >150) and control set (<min_correct)
 """
 import json
@@ -113,26 +113,30 @@ def build_validation(data, min_correct):
 
 
 def main(input="multi_results.json", output=None, strategy="matched",
-         max_diff=150, min_correct=7):
+         max_diff=150, min_correct=7, model_tag=""):
+    def tagged(name):
+        p = PROBING_DIR / name
+        return str(p.parent / f"{p.stem}_{model_tag}{p.suffix}") if model_tag else str(p)
+
     with open(input) as f:
         data = json.load(f)
 
     if strategy == "matched":
-        output = output or str(PROBING_DIR / "spontaneous_lie_truth.json")
+        output = output or tagged("spontaneous_lie_truth.json")
         dataset = build_matched(data, max_diff, min_correct)
         with open(output, "w") as f:
             json.dump(dataset, f, indent=2)
         print(f"{len(dataset)//2} pairs -> {output}")
 
     elif strategy == "inconsistent":
-        output = output or str(PROBING_DIR / "spontaneous_inconsistent.json")
+        output = output or tagged("spontaneous_inconsistent.json")
         dataset = build_inconsistent(data, max_diff)
         with open(output, "w") as f:
             json.dump(dataset, f, indent=2)
         print(f"{len(dataset)//2} pairs -> {output}")
 
     elif strategy == "validation":
-        output = output or str(PROBING_DIR / "spontaneous_validation.json")
+        output = output or tagged("spontaneous_validation.json")
         validation = build_validation(data, min_correct)
         with open(output, "w") as f:
             json.dump(validation, f, indent=2)

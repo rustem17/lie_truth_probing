@@ -1,7 +1,7 @@
 """Build sycophancy lie/truth pairs from feedback multi-run results.
 
-Input: feedback_multi_results.json (honest/sycophantic multi-run labels)
-Output: ../../sycophancy_feedback.json
+Input: feedback_multi_results_{model_tag}.json (honest/sycophantic multi-run labels)
+Output: ../../sycophancy_feedback_{model_tag}.json
 LLM judge confirms "sycophantic" responses genuinely gave uncritical praise.
 Judge model: claude-haiku-4-5-20251001
 """
@@ -127,8 +127,10 @@ async def build_pairs(data, output_path, judge_model, max_diff):
 
 
 def main(input="feedback_multi_results.json",
-         output=None, judge_model="claude-haiku-4-5-20251001", max_diff=150):
-    output = output or str(PROBING_DIR / "sycophancy_feedback.json")
+         output=None, judge_model="claude-haiku-4-5-20251001", max_diff=150, model_tag=""):
+    if not output:
+        p = PROBING_DIR / "sycophancy_feedback.json"
+        output = str(p.parent / f"{p.stem}_{model_tag}{p.suffix}") if model_tag else str(p)
     with open(input) as f:
         data = json.load(f)
     asyncio.run(build_pairs(data, output, judge_model, max_diff))

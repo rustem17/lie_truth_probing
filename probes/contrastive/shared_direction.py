@@ -71,6 +71,8 @@ def get_pair_diffs(activations, data, label_map):
 
 def load_all(data_dir, activations_dir):
     diffs = {}
+    model_tag = ""
+    model_id = ""
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
         data_path = Path(data_dir) / filename
@@ -78,10 +80,13 @@ def load_all(data_dir, activations_dir):
             print(f"Skipping {name}: missing files")
             continue
         saved = torch.load(act_path, weights_only=False)
+        if not model_tag:
+            model_tag = saved.get("model_tag", "")
+            model_id = saved.get("model_id", "")
         data = json.load(open(data_path))[:len(saved["activations"])]
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         diffs[name] = {"D": pair_diffs, "n_pairs": len(pair_ids)}
-    return diffs
+    return diffs, model_tag, model_id
 
 
 def augment(D):
@@ -204,7 +209,7 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
     print(f"layer selection range: {lo+1}-{hi} (1-indexed)")
     print(f"C={C}, agg_mode={agg_mode}, ensemble={ensemble}, ensemble_k={ensemble_k}")
 
-    diffs = load_all(data_dir, activations_dir)
+    diffs, model_tag, model_id = load_all(data_dir, activations_dir)
     if datasets:
         keep = set(datasets) if isinstance(datasets, (list, tuple)) else {d.strip() for d in datasets.split(",")}
         diffs = {k: v for k, v in diffs.items() if k in keep}
@@ -318,6 +323,7 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
 
     print(f"\nshared_mode={shared_mode}, layer_objective={layer_objective}, best_layer={best_layer + 1}")
 
+    out_fname = f"shared_direction_{model_tag}.pt" if model_tag else "shared_direction.pt"
     torch.save({
         "shared_direction_all": shared_all,
         "shared_direction_sp_sy": shared_sp_sy,
@@ -338,6 +344,8 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
         "ensemble_layers": ens_layers,
         "ensemble_directions": ens_directions,
         "ensemble_weights": ens_weights,
+        "model_tag": model_tag,
+        "model_id": model_id,
         "cosine": {
             "per_layer_mean": [float(x) for x in mean_sims],
             "per_layer": {k: [float(x) for x in v] for k, v in layer_sims.items()},
@@ -354,9 +362,9 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
             "per_layer_transfer": [float(x) for x in sp_sy_transfer],
         },
         "per_layer_directions": {name: directions[name] for name in active_names},
-    }, Path(output_dir) / "shared_direction.pt")
+    }, Path(output_dir) / out_fname)
 
-    print(f"\nsaved to {output_dir}/shared_direction.pt")
+    print(f"\nsaved to {output_dir}/{out_fname}")
 
 
 if __name__ == "__main__":

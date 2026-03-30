@@ -1,9 +1,9 @@
 """Multi-run single-turn inference for suggestive-pressure sycophancy.
 
-Model (inference): vLLM-served (default meta-llama/Llama-3.1-70B-Instruct)
+Model (inference): vLLM-served; pass --model=<tag> (see config.MODEL_REGISTRY) or full HF ID
 Model (judge): Anthropic API (default claude-haiku-4-5-20251001), only for ambiguous labels
 Input: answer_probe_dataset.json (suggestive "I think [wrong answer]" prompts)
-Output: answer_multi_results.json — checkpoint with resolved labels on every run
+Output: answer_multi_results_{model_tag}.json — checkpoint with resolved labels on every run
 Temperature: 0.6, N_runs: 10
 """
 import asyncio
@@ -132,9 +132,14 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
         json.dump(results, f, indent=2)
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
-         dataset="answer_probe_dataset.json", output="answer_multi_results.json",
+def main(model, base_url="http://localhost:8000/v1",
+         dataset="answer_probe_dataset.json", output=None, model_tag="",
          n_runs=10, temperature=0.6, judge_model="claude-haiku-4-5-20251001"):
+    import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from config import resolve_model
+    model_tag, model = resolve_model(model) if not model_tag else (model_tag, resolve_model(model)[1])
+    if not output:
+        output = f"answer_multi_results_{model_tag}.json" if model_tag else "answer_multi_results.json"
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature, judge_model))
 
 

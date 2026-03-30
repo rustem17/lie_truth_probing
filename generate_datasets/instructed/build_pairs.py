@@ -1,7 +1,7 @@
 """Build filtered lie/truth pairs from judged multi-run results.
 
-Input: multi_results.json (from infer.py — model_responses + judge_labels per run)
-Output: ../../instructed_lie_truth.json
+Input: multi_results_{model_tag}.json (from infer.py — model_responses + judge_labels per run)
+Output: ../../instructed_lie_truth_{model_tag}.json
 Filters: truth must have >= truth_threshold compliant runs (default 9/10),
          lie must have >= 1 compliant run, char length diff <= max_diff.
 Picks first compliant response per sample. Caps at max_pairs (default 400).
@@ -30,7 +30,9 @@ def compliance_count(sample):
 
 
 def main(input="multi_results.json", output=str(OUTPUT), max_diff=15,
-         truth_threshold=9, max_pairs=400):
+         truth_threshold=9, max_pairs=400, model_tag=""):
+    if model_tag and output == str(OUTPUT):
+        output = str(OUTPUT.parent / f"{OUTPUT.stem}_{model_tag}{OUTPUT.suffix}")
     with open(input) as f:
         data = json.load(f)
 

@@ -44,6 +44,7 @@ def get_pair_diffs(activations, data, label_map):
 
 def validate(data_dir="../..", activations_dir="../../activations", probes_dir="."):
     results = {}
+    model_tag = ""
 
     for probe_name, val_sets in VALIDATION_MAP.items():
         probe_path = Path(probes_dir) / f"{probe_name}_probe.pt"
@@ -52,6 +53,8 @@ def validate(data_dir="../..", activations_dir="../../activations", probes_dir="
             continue
 
         probe = torch.load(probe_path, weights_only=False)
+        if not model_tag:
+            model_tag = probe.get("model_tag", "")
         direction = probe["direction"]
         best_layer = probe["best_layer"]
 
@@ -83,7 +86,8 @@ def validate(data_dir="../..", activations_dir="../../activations", probes_dir="
                 "layer": best_layer,
             }
 
-    out_path = Path(probes_dir) / "validation_results.json"
+    out_fname = f"validation_results_{model_tag}.json" if model_tag else "validation_results.json"
+    out_path = Path(probes_dir) / out_fname
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved to {out_path}")

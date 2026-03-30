@@ -91,3 +91,23 @@ def pair_color(a, b):
     if key not in _PAIR_COLOR_CACHE:
         _PAIR_COLOR_CACHE[key] = _PAIR_PALETTE[len(_PAIR_COLOR_CACHE) % len(_PAIR_PALETTE)]
     return _PAIR_COLOR_CACHE[key]
+
+
+MODEL_REGISTRY = {
+    "gemma3-27b": "gghfez/gemma-3-27b-novision",
+    "olmo3-32b-instruct": "allenai/Olmo-3.1-32B-Instruct",
+    "olmo3-32b-think": "allenai/Olmo-3-32B-Think",
+    "olmo3-32b-base": "allenai/Olmo-3-1125-32B",
+}
+
+def resolve_model(tag_or_id):
+    if tag_or_id in MODEL_REGISTRY:
+        return tag_or_id, MODEL_REGISTRY[tag_or_id]
+    for tag, mid in MODEL_REGISTRY.items():
+        if mid == tag_or_id:
+            return tag, mid
+    return tag_or_id.split("/")[-1].lower(), tag_or_id
+
+def dataset_filename(base_name, model_tag):
+    p = Path(base_name)
+    return f"{p.stem}_{model_tag}{p.suffix}"

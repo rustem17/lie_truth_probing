@@ -1,7 +1,7 @@
 """Build filtered game_lie/game_truth pairs from judged multi-run results.
 
-Input: multi_results.json (from infer.py — game scenarios, model_responses + judge_labels)
-Output: ../../game_lie_truth.json
+Input: multi_results_{model_tag}.json (from infer.py — game scenarios, model_responses + judge_labels)
+Output: ../../game_lie_truth_{model_tag}.json
 Filters: both lie and truth must have a compliant run, char length diff <= max_diff.
 Picks first compliant response per sample.
 """
@@ -22,7 +22,9 @@ def first_compliant(sample):
     return None
 
 
-def main(input="multi_results.json", output=str(OUTPUT), max_diff=200):
+def main(input="multi_results.json", output=str(OUTPUT), max_diff=200, model_tag=""):
+    if model_tag and output == str(OUTPUT):
+        output = str(OUTPUT.parent / f"{OUTPUT.stem}_{model_tag}{OUTPUT.suffix}")
     with open(input) as f:
         data = json.load(f)
 

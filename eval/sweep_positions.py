@@ -1,7 +1,7 @@
 """
 Sweep activation extraction positions and evaluate mass-mean probes.
 
-Model: meta-llama/Llama-3.1-70B-Instruct + LoRA
+Model: auto-resolved from tag via config.resolve_model (or pass --model_name explicitly)
 Positions: first, last, first_assistant, last_user, mean_assistant
 Probe: mass-mean (mean of pair diffs, no LR)
 Validation: contrastive-style cross-dataset transfer AUROC
@@ -241,8 +241,11 @@ def write_summary(all_results, sweep_dir, ts):
 
 def main(data_dir=None, output_dir=None, phase="all",
          positions="first,last,first_assistant,last_user,mean_assistant,mid_assistant,first_k_assistant,last_k_assistant",
-         model_name="meta-llama/Llama-3.1-70B-Instruct",
-         adapter_id="dv347/Llama-3.1-70B-Instruct-honly", k=10):
+         model_name=None, adapter_id="", k=10):
+    if model_name:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from config import resolve_model
+        _, model_name = resolve_model(model_name)
     probing_root = Path(__file__).resolve().parents[1]
     if data_dir is None:
         data_dir = str(probing_root)

@@ -47,6 +47,8 @@ def get_pair_diffs(activations, data, label_map):
 
 def load_all(data_dir, activations_dir):
     diffs = {}
+    model_tag = ""
+    model_id = ""
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
         data_path = Path(data_dir) / filename
@@ -54,10 +56,13 @@ def load_all(data_dir, activations_dir):
             print(f"Skipping {name}: missing files")
             continue
         saved = torch.load(act_path, weights_only=False)
+        if not model_tag:
+            model_tag = saved.get("model_tag", "")
+            model_id = saved.get("model_id", "")
         data = json.load(open(data_path))[:len(saved["activations"])]
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         diffs[name] = {"D": pair_diffs, "n_pairs": len(pair_ids)}
-    return diffs
+    return diffs, model_tag, model_id
 
 
 def fisher_lda(D, ridge=1e-4):
@@ -150,7 +155,7 @@ def cross_transfer_all_layers(directions, diffs, n_layers, transfer_pairs):
 def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".", datasets=None, ridge=1e-4, pca_var=0.95):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    diffs = load_all(data_dir, activations_dir)
+    diffs, model_tag, model_id = load_all(data_dir, activations_dir)
     if datasets:
         keep = set(datasets) if isinstance(datasets, (list, tuple)) else {d.strip() for d in datasets.split(",")}
         diffs = {k: v for k, v in diffs.items() if k in keep}
@@ -224,6 +229,7 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
     else:
         shared_sp_sy = None
 
+    out_fname = f"shared_direction_{model_tag}.pt" if model_tag else "shared_direction.pt"
     torch.save({
         "shared_direction_all": shared_all,
         "shared_direction_sp_sy": shared_sp_sy,
@@ -231,6 +237,8 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
         "best_layer_transfer": best_layer_transfer + 1,
         "best_layer_sp_sy_transfer": best_sp_sy_transfer + 1,
         "probe_type": "mahalanobis_lda",
+        "model_tag": model_tag,
+        "model_id": model_id,
         "cosine": {
             "per_layer_mean": [float(x) for x in mean_sims],
             "per_layer": {k: [float(x) for x in v] for k, v in layer_sims.items()},
@@ -244,9 +252,9 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
             "per_layer_transfer": [float(x) for x in sp_sy_transfer],
         },
         "per_layer_directions": {name: directions[name] for name in active_names},
-    }, Path(output_dir) / "shared_direction.pt")
+    }, Path(output_dir) / out_fname)
 
-    print(f"\nsaved to {output_dir}/shared_direction.pt")
+    print(f"\nsaved to {output_dir}/{out_fname}")
 
 
 if __name__ == "__main__":

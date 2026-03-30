@@ -1,9 +1,9 @@
 """Multi-run vLLM inference + LLM factual-correctness judge for instructed dataset.
 
-Model (inference): vLLM-served (default meta-llama/Llama-3.1-70B-Instruct)
+Model (inference): vLLM-served; pass --model=<tag> (see config.MODEL_REGISTRY) or full HF ID
 Model (judge): Anthropic API (default claude-sonnet-4-5-20250929)
 Input: probe_dataset.json (1200 samples)
-Output: multi_results.json — checkpoint with judge labels on every response
+Output: multi_results_{model_tag}.json — checkpoint with judge labels on every response
 Temperature: 0.6, N_runs: 10
 """
 import asyncio
@@ -129,9 +129,14 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
     print(f"{len(results)} samples, {n_runs} runs each -> {output}")
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
-         dataset="probe_dataset.json", output="multi_results.json",
+def main(model, base_url="http://localhost:8000/v1",
+         dataset="probe_dataset.json", output=None, model_tag="",
          n_runs=10, temperature=0.6, judge_model="claude-sonnet-4-5-20250929"):
+    import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    from config import resolve_model
+    model_tag, model = resolve_model(model) if not model_tag else (model_tag, resolve_model(model)[1])
+    if not output:
+        output = f"multi_results_{model_tag}.json" if model_tag else "multi_results.json"
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature, judge_model))
 
 

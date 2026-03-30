@@ -45,6 +45,8 @@ def get_pair_diffs(activations, data, label_map):
 def train(data_dir="../..", activations_dir="../../activations", output_dir=".", n_splits=5):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
+    model_tag = ""
+    model_id = ""
 
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
@@ -54,6 +56,9 @@ def train(data_dir="../..", activations_dir="../../activations", output_dir=".",
             continue
 
         saved = torch.load(act_path, weights_only=False)
+        if not model_tag:
+            model_tag = saved.get("model_tag", "")
+            model_id = saved.get("model_id", "")
         data = json.load(open(data_path))[:len(saved["activations"])]
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         n_pairs, n_layers, hidden_dim = pair_diffs.shape
@@ -99,6 +104,7 @@ def train(data_dir="../..", activations_dir="../../activations", output_dir=".",
         best_idx = best["layer"] - 1
         direction = all_directions[best_idx]
 
+        probe_fname = f"{name}_probe_{model_tag}.pt" if model_tag else f"{name}_probe.pt"
         torch.save({
             "direction": direction,
             "coef": None,
@@ -107,11 +113,14 @@ def train(data_dir="../..", activations_dir="../../activations", output_dir=".",
             "layer_results": layer_results,
             "n_pairs": n_pairs,
             "pair_ids": pair_ids,
-        }, Path(output_dir) / f"{name}_probe.pt")
+            "model_tag": model_tag,
+            "model_id": model_id,
+        }, Path(output_dir) / probe_fname)
 
         all_results[name] = layer_results
 
-    with open(Path(output_dir) / "results.json", "w") as f:
+    results_fname = f"results_{model_tag}.json" if model_tag else "results.json"
+    with open(Path(output_dir) / results_fname, "w") as f:
         json.dump(all_results, f, indent=2)
 
     print(f"\nSaved to {output_dir}/")

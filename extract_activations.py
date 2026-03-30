@@ -1,13 +1,14 @@
 """
 Extract hidden-state activations from paired lie/truth datasets.
 
-Model: meta-llama/Llama-3.1-70B-Instruct + dv347/Llama-3.1-70B-Instruct-honly LoRA (--adapter_id, pass "" to skip)
+Model: specify via MODEL_REGISTRY tag (e.g. gemma3-27b, olmo3-32b-instruct) or full HuggingFace model ID;
+       model tag and model_id are stored in .pt metadata for traceability
 Datasets: instructed, spontaneous, sycophancy, game_lie, spontaneous_inconsistent,
           + validation: instructed_validation, spontaneous_validation, spontaneous_control, sycophancy_validation
 Position: first (prefix+3), last (EOS), first_assistant (prefix+1), last_user (prefix-2),
           mean_assistant (mean over response), mid_assistant (midpoint token),
           first_k_assistant (mean first K tokens), last_k_assistant (mean last K tokens)
-Output: activations/{name}.pt (or activations_{position}/ for non-default positions)
+Output: activations_{tag}/{name}.pt (or activations_{tag}_{position}/ for non-default positions)
 """
 import json
 import torch
@@ -17,7 +18,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import fire
 
-from config import ALL_DATASETS
+from config import ALL_DATASETS, resolve_model, dataset_filename
 
 
 def build_conversation(sample):
@@ -59,11 +60,11 @@ def get_position(position, prefix_len, seq_len, k=10):
     return (start, end)
 
 
-def load_model(model_name="meta-llama/Llama-3.1-70B-Instruct", adapter_id="dv347/Llama-3.1-70B-Instruct-honly"):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+def load_model(model_id, adapter_id=""):
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, device_map="cuda:0"
+        model_id, torch_dtype=torch.bfloat16, device_map="cuda:0"
     )
     if adapter_id:
         from peft import PeftModel
@@ -73,7 +74,7 @@ def load_model(model_name="meta-llama/Llama-3.1-70B-Instruct", adapter_id="dv347
     return model, tokenizer
 
 
-def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10):
+def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10, model_tag="", model_id=""):
     if output_dir is None:
         output_dir = "activations" if position == "first" else f"activations_{position}"
     Path(output_dir).mkdir(exist_ok=True)
@@ -85,7 +86,8 @@ def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position
         run_datasets = ALL_DATASETS
 
     for name, (filename, label_map) in run_datasets.items():
-        data = json.load(open(Path(data_dir) / filename))
+        fname = dataset_filename(filename, model_tag) if model_tag else filename
+        data = json.load(open(Path(data_dir) / fname))
         if max_samples:
             data = data[:max_samples]
         labels = np.array([label_map[s["condition"]] for s in data])
@@ -116,16 +118,19 @@ def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position
 
         all_hidden = np.stack(all_hidden)
         torch.save(
-            {"activations": all_hidden, "labels": labels, "label_map": label_map},
+            {"activations": all_hidden, "labels": labels, "label_map": label_map, "model_tag": model_tag, "model_id": model_id},
             Path(output_dir) / f"{name}.pt",
             pickle_protocol=4,
         )
         print(f"{name}: {all_hidden.shape}, lies={labels.sum()}/{len(labels)}")
 
 
-def extract(model_name="meta-llama/Llama-3.1-70B-Instruct", adapter_id="dv347/Llama-3.1-70B-Instruct-honly", data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10):
-    model, tokenizer = load_model(model_name, adapter_id)
-    extract_with_model(model, tokenizer, data_dir, output_dir, position, max_length, datasets, max_samples, k)
+def extract(model, adapter_id="", data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10):
+    tag, model_id = resolve_model(model)
+    if output_dir is None:
+        output_dir = f"activations_{tag}" if position == "first" else f"activations_{tag}_{position}"
+    m, tokenizer = load_model(model_id, adapter_id)
+    extract_with_model(m, tokenizer, data_dir, output_dir, position, max_length, datasets, max_samples, k, model_tag=tag, model_id=model_id)
 
 
 if __name__ == "__main__":

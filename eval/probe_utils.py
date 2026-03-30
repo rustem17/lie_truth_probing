@@ -91,14 +91,24 @@ def load_directions(probe_paths, irm_path=None, directions="all"):
     return result
 
 
-def default_probe_paths():
-    candidates = [
-        PROBES_ROOT / "contrastive" / "shared_direction.pt",
-        PROBES_ROOT / "mass_mean" / "shared_direction.pt",
-    ]
-    return [str(p) for p in candidates if p.exists()]
+def default_probe_paths(model_tag=None):
+    candidates = []
+    for method in ["contrastive", "mass_mean"]:
+        if model_tag:
+            p = PROBES_ROOT / method / f"shared_direction_{model_tag}.pt"
+            if p.exists():
+                candidates.append(str(p))
+                continue
+        p = PROBES_ROOT / method / "shared_direction.pt"
+        if p.exists():
+            candidates.append(str(p))
+    return candidates
 
 
-def default_irm_path():
+def default_irm_path(model_tag=None):
+    if model_tag:
+        p = PROBES_ROOT / "irm" / f"irm_probe_{model_tag}.pt"
+        if p.exists():
+            return str(p)
     p = PROBES_ROOT / "irm" / "irm_probe.pt"
     return str(p) if p.exists() else None

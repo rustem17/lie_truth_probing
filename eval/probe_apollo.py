@@ -1,7 +1,7 @@
 """
 Evaluate lie/truth probes on Apollo's scheming datasets (black_to_white_boosts).
 
-Model: meta-llama/Llama-3.1-70B-Instruct (+ optional LoRA adapter)
+Model: auto-resolved from probe metadata (or pass --model explicitly)
 Probes: comma-separated .pt paths relative to probes/ dir
 Datasets: ai_liar, sandbagging_wmdp_mmlu, insider_trading_full, apps_backdoors, alpaca
 Data format: JSONL from https://github.com/carlo-leonardo-attubato/black_to_white_boosts
@@ -84,7 +84,7 @@ def plot_sweep_apollo(all_results, probe_names, position, output_dir):
 
 
 def main(
-    model="meta-llama/Llama-3.1-70B-Instruct",
+    model=None,
     adapter_id=None,
     probe_paths="contrastive/shared_direction.pt",
     apollo_dir=".",
@@ -111,8 +111,8 @@ def main(
         print(f"No JSONL files found in {apollo_dir}")
         return
 
-    probes = load_probes_sweep(probe_paths) if layer == "all" else load_probes(probe_paths, layer_override=layer)
-    scorer = ReplayScorer(model, adapter_id=adapter_id, probes=probes)
+    probes, model_tag = load_probes_sweep(probe_paths) if layer == "all" else load_probes(probe_paths, layer_override=layer)
+    scorer = ReplayScorer(model, adapter_id=adapter_id, probes=probes, model_tag=model_tag)
     probe_names = [p[0] for p in probes]
 
     all_results = {}

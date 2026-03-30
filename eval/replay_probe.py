@@ -7,8 +7,8 @@ with probe directions in the hook — no full hidden state materialization.
 
 Usage as library:
     from replay_probe import ReplayScorer, load_probes
-    probes = load_probes("contrastive/shared_direction.pt,mass_mean/shared_direction.pt")
-    scorer = ReplayScorer("meta-llama/Llama-3.1-70B-Instruct", probes=probes)
+    probes, model_tag = load_probes("contrastive/shared_direction.pt,mass_mean/shared_direction.pt")
+    scorer = ReplayScorer(model_tag=model_tag, probes=probes)
     results = scorer.score_many(texts, positions="last")
 """
 import numpy as np
@@ -32,9 +32,12 @@ def load_probes(probe_paths, probes_root=PROBES_ROOT, layer_override=None):
     if isinstance(probe_paths, str):
         probe_paths = [p.strip() for p in probe_paths.split(",")]
     probes = []
+    model_tag = ""
     for p in probe_paths:
         path = Path(p) if Path(p).is_absolute() else probes_root / p
         data = torch.load(path, weights_only=False)
+        if not model_tag:
+            model_tag = data.get("model_tag", "")
         name = f"{path.parent.name}/{path.stem}" if path.parent.name != "probes" else path.stem
         if "shared_direction_all" in data:
             direction = np.asarray(data["shared_direction_all"])
@@ -45,12 +48,13 @@ def load_probes(probe_paths, probes_root=PROBES_ROOT, layer_override=None):
         if layer_override is not None:
             layer = int(layer_override) - 1
         probes.append((name, layer, direction))
-    return probes
+    return probes, model_tag
 
 
 def load_probes_sweep(probe_path, probes_root=PROBES_ROOT):
     path = Path(probe_path) if Path(probe_path).is_absolute() else probes_root / probe_path
     data = torch.load(path, weights_only=False)
+    model_tag = data.get("model_tag", "")
     base_name = f"{path.parent.name}/{path.stem}" if path.parent.name != "probes" else path.stem
     all_dirs = data.get("all_directions")
     if all_dirs is None:
@@ -59,7 +63,7 @@ def load_probes_sweep(probe_path, probes_root=PROBES_ROOT):
     for layer_idx in sorted(all_dirs.keys()):
         name = f"{base_name}/L{layer_idx + 1}"
         probes.append((name, layer_idx, np.asarray(all_dirs[layer_idx])))
-    return probes
+    return probes, model_tag
 
 
 def _make_score_hook(probes_at_layer, state):
@@ -79,7 +83,12 @@ def _make_score_hook(probes_at_layer, state):
 
 
 class ReplayScorer:
-    def __init__(self, model_name, adapter_id=None, probes=None, device_map="auto"):
+    def __init__(self, model_name=None, adapter_id=None, probes=None, device_map="auto", model_tag=None):
+        if model_name is None and model_tag:
+            import sys
+            sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+            from config import resolve_model
+            _, model_name = resolve_model(model_tag)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(

@@ -49,16 +49,21 @@ def get_pair_diffs(activations, data, label_map):
 
 def load_envs(env_names, data_dir, activations_dir, max_samples=None):
     envs = {}
+    model_tag = ""
+    model_id = ""
     for name in env_names:
         filename, label_map = TRAIN_DATASETS[name]
         saved = torch.load(Path(activations_dir) / f"{name}.pt", weights_only=False)
+        if not model_tag:
+            model_tag = saved.get("model_tag", "")
+            model_id = saved.get("model_id", "")
         data = json.load(open(Path(data_dir) / filename))[:len(saved["activations"])]
         if max_samples:
             data = data[:max_samples]
             saved["activations"] = saved["activations"][:max_samples]
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         envs[name] = {"D": pair_diffs, "pair_ids": pair_ids}
-    return envs
+    return envs, model_tag, model_id
 
 
 def get_lambda(step, warmup_steps, ramp_steps, lambda_target):
@@ -147,7 +152,7 @@ def train(envs="instructed,spontaneous,sycophancy", data_dir="../..", activation
           max_samples=None, penalty="irm", weight_decay=0.0):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     env_names = [e.strip() for e in envs.split(",")] if isinstance(envs, str) else list(envs)
-    env_data = load_envs(env_names, data_dir, activations_dir, max_samples)
+    env_data, model_tag, model_id = load_envs(env_names, data_dir, activations_dir, max_samples)
 
     n_layers = next(iter(env_data.values()))["D"].shape[1]
     hidden_dim = next(iter(env_data.values()))["D"].shape[2]
@@ -173,6 +178,7 @@ def train(envs="instructed,spontaneous,sycophancy", data_dir="../..", activation
 
     all_directions = {layer: directions[layer] for layer in range(n_layers)}
 
+    probe_fname = f"irm_probe_{model_tag}.pt" if model_tag else "irm_probe.pt"
     torch.save({
         "direction": directions[best_idx],
         "weight": weights[best_idx],
@@ -180,14 +186,16 @@ def train(envs="instructed,spontaneous,sycophancy", data_dir="../..", activation
         "all_directions": all_directions,
         "layer_results": layer_results,
         "envs": env_names,
+        "model_tag": model_tag,
+        "model_id": model_id,
         "config": {
             "n_epochs": n_epochs, "lr": lr, "lambda_irm": lambda_irm,
             "warmup_steps": warmup_steps, "ramp_steps": ramp_steps,
             "penalty": penalty, "weight_decay": weight_decay,
         },
-    }, Path(output_dir) / "irm_probe.pt")
+    }, Path(output_dir) / probe_fname)
 
-    print(f"saved to {output_dir}/irm_probe.pt")
+    print(f"saved to {output_dir}/{probe_fname}")
 
 
 if __name__ == "__main__":

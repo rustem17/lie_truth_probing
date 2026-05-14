@@ -1,0 +1,45 @@
+Technical write-up draft: probing pipeline and confound mitigations
+
+Raw confound mitigation notes
+
+The strongest mitigation is paired construction: lie/truth examples share the same question or scenario wherever possible.
+
+Other mitigations in the code:
+
+- length matching between paired responses
+- multiple stochastic samples per prompt
+- LLM judge or parser confirmation before inclusion
+- answer-alias handling for factual questions
+- ground-truth leakage filtering in sycophancy_answer
+- same-turn matching for sycophancy_are_you_sure
+- balanced pair labels via +D / -D augmentation
+- cross-validation by pair ID
+- held-out prompt-surface validation
+- cross-domain validation, e.g. Werewolf -> Mafia
+- dataset provenance hashes in activation files
+- red-team scripts for length, prefix, difficulty, random baseline, no-augmentation, distribution shift
+
+
+Prose draft
+
+The project studies whether lie-like and truth-like model behavior can be separated by simple linear directions in a model's internal representations. The basic experimental unit is a paired example. For a given question, scenario, or user-pressure setting, the pipeline tries to construct two matched responses: one assigned to a lie-like condition and one assigned to a truth-like condition. The exact meaning of "lie-like" depends on the dataset family. In instructed and game settings, it is closer to explicit deception or concealment. In spontaneous settings, it is a naturally incorrect answer. In sycophancy settings, it is a response that goes along with a wrong user suggestion or gives uncritical praise to a flawed argument or solution.
+
+The pipeline begins by generating prompts for each dataset family. In the instructed datasets, the model is explicitly told to answer truthfully or falsely, either through the system prompt or through the user prompt. In the spontaneous datasets, the model receives ordinary multiple-choice questions with no instruction to lie; the paired data comes from repeated sampling, where some completions are correct and others are incorrect. In the sycophancy datasets, the user introduces pressure by suggesting a wrong answer, asking "Are you sure?", or expressing approval of flawed reasoning. In the game datasets, the model is placed in a social-deduction role where the lie condition requires hiding incriminating information and the truth condition requires revealing it.
+
+After prompt generation, the target model is sampled multiple times through vLLM. The raw generations are not used directly. They are filtered by parsers and/or LLM judges to confirm that the response actually satisfies the intended behavioral condition. For factual instructed data, responses are judged for factual correctness against the ground truth and accepted aliases. For spontaneous multiple-choice data, the selected answer is parsed or judged against the correct option. For sycophancy data, responses are checked for whether the model committed to the wrong suggestion, flipped after pressure, held the correct answer, or gave honest versus sycophantic feedback. For game data, an LLM judge checks whether the model revealed or concealed the relevant fact, such as voting for the observed suspect or stating the incriminating location.
+
+The pair-building step then selects matched lie/truth responses. Whenever possible, the two sides of a pair share the same underlying question, scenario, user message, and ground truth. This reduces the chance that a probe is only learning topic, question difficulty, or scenario identity. The builders also apply length constraints so that a lie response and a truth response are not trivially separable by response length. In several datasets, the selected pair is chosen from multiple sampled responses to minimize the length difference while preserving the intended behavioral labels.
+
+Once paired datasets are built, activations are extracted from the same model. The extraction script reconstructs the full chat conversation, including the system prompt, user message, optional followup turn, and final assistant response. It then runs the model with hidden-state output enabled and saves residual-stream hidden states from every transformer layer. The default extraction position is near the beginning of the final assistant response, but the code also supports positions such as the last token, first assistant token, last user token, mean over assistant response tokens, midpoint assistant token, and first/last k assistant-token averages.
+
+The probes are trained on paired activation differences. For each pair and each layer, the core representation is:
+
+    D = h_lie - h_truth
+
+This difference removes much of the shared prompt and question content, because both sides of the pair are built from the same or closely matched setup. The standard contrastive training augmentation then treats +D as the positive lie-like example and -D as the truth-like example. This creates balanced labels and makes the probe direction depend on relative differences within pairs rather than absolute activation offsets across unrelated examples.
+
+Several linear probe variants are used. The mass-mean probe simply averages lie-minus-truth differences and normalizes the resulting direction. The contrastive probe trains a no-intercept logistic regression classifier on +D versus -D. The Mahalanobis LDA probe estimates a Fisher-style direction that accounts for within-class covariance of the paired differences. The IRM/V-REx probe trains a linear classifier jointly across multiple dataset environments, with a penalty intended to prefer directions that are stable across conditions rather than specialized to one dataset.
+
+Evaluation is mostly based on dot-product scoring along a learned direction. For a held-out pair difference D, the score D dot w should be higher for the lie-like orientation than for the truth-like orientation. AUROC is then computed using both +D and -D. Probe training uses cross-validation split by pair ID, so the lie and truth side of the same pair do not leak across train/test folds. Validation also includes transfer tests, such as training on instructed-system-prompt data and evaluating on instructed-user-prompt data, or training on Werewolf game data and evaluating on Mafia game data.
+
+The overall design is meant to ask whether a linear lie/truth direction is robust across changes in surface prompt, dataset source, and behavioral framing. The paired construction controls the strongest obvious confounds, while validation datasets and red-team diagnostics test whether the learned signal survives when prompt wording, response length, scenario domain, or answer difficulty changes. The current results should therefore be interpreted as evidence about linear separability of these paired behavioral contrasts in residual-stream hidden states, not as a complete proof that the direction is a pure or universal representation of deception.

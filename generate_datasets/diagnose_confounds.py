@@ -6,7 +6,7 @@ Checks per file:
   - Keyword leakage: condition-correlated keywords in model responses (chi-squared)
 
 Usage:
-    python diagnose_confounds.py instructed_lie_truth.json spontaneous_lie_truth.json
+    python diagnose_confounds.py instructed_system_prompt.json spontaneous_1.json
     python diagnose_confounds.py  # defaults to all paired JSONs in probing/ root
 """
 import json

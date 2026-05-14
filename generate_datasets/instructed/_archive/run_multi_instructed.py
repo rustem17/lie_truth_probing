@@ -1,7 +1,7 @@
 """
 Multi-run vLLM inference for instructed lie/truth dataset.
 
-Model: vLLM-served model (default meta-llama/Llama-3.1-70B-Instruct)
+Model: vLLM-served model (default meta-llama/Llama-3.3-70B-Instruct)
 Dataset: probe_dataset.json (516 pairs, fixed system prompts)
 Temperature: 0.6
 N_runs: 3
@@ -62,7 +62,7 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature):
     print(f"{len(results)} samples, {n_runs} runs each -> {output}")
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
+def main(model="meta-llama/Llama-3.3-70B-Instruct", base_url="http://localhost:8000/v1",
          dataset="probe_dataset.json", output="instructed_multi_results.json",
          n_runs=3, temperature=0.6):
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature))

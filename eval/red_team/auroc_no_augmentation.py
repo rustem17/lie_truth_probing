@@ -14,8 +14,8 @@ Real AUROC: computed on individual activations (not pairs), labels from conditio
     auroc = roc_auc_score(labels, scores)
 
 Usage:
-    python auroc_no_augmentation.py --model_tag gemma3-27b
-    python auroc_no_augmentation.py --model_tag gemma3-27b --methods mass_mean,contrastive,mahalanobis_lda
+    python auroc_no_augmentation.py --model_tag llama-3-3-70b-instruct
+    python auroc_no_augmentation.py --model_tag llama-3-3-70b-instruct --methods mass_mean,mass_mean_iid,paired_pca,contrastive,mahalanobis_lda
 """
 
 import sys
@@ -30,7 +30,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -49,15 +56,16 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def run(model_tag,
+def run(model_tag=DEFAULT_MODEL_TAG,
         act_dir=None,
         data_dir="../..",
         probes_dir="../..",
-        methods="mass_mean,contrastive,mahalanobis_lda",
+        methods="mass_mean,mass_mean_iid,paired_pca,contrastive,mahalanobis_lda",
         n_splits=5,
         output_dir="results"):
+    model_tag, _ = resolve_model(model_tag)
     if act_dir is None:
-        act_dir = f"../../activations_{model_tag}"
+        act_dir = f"../../{activation_dirname(model_tag)}"
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     method_list = [m.strip() for m in methods.split(",")]
@@ -72,24 +80,31 @@ def run(model_tag,
                 continue
 
             act_path = Path(act_dir) / f"{name}.pt"
-            data_path = Path(data_dir) / filename
-            if not act_path.exists() or not data_path.exists():
+            if not act_path.exists():
                 continue
 
             probe = torch.load(probe_path, weights_only=False)
             saved = torch.load(act_path, weights_only=False)
+            data_path = resolve_dataset_path_for_activation(
+                data_dir, filename, saved.get("model_tag", model_tag), saved
+            )
+            if not data_path.exists():
+                continue
             data = json.load(open(data_path))[:len(saved["activations"])]
+            validate_dataset_provenance(saved, data, name)
             activations = saved["activations"]
             labels = np.array([label_map[s["condition"]] for s in data])
             pair_diffs, _ = get_pair_diffs(activations, data, label_map)
 
-            best_layer = probe.get("best_layer", 1)
+            best_layer = probe.get("best_layer", probe.get("best_layer_transfer", 1))
             best_idx = best_layer - 1
             D = pair_diffs[:, best_idx]
             n_pairs = D.shape[0]
 
             if "all_directions" in probe:
                 direction = probe["all_directions"][best_idx]
+            elif "shared_direction_all" in probe:
+                direction = probe["shared_direction_all"]
             else:
                 direction = probe["direction"]
             direction = direction / np.linalg.norm(direction)

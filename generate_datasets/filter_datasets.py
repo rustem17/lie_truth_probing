@@ -1,27 +1,31 @@
 """
 Response-length post-filter for probing datasets.
 
-Filters: instructed, game_lie, spontaneous.
-Metric: token count of model_response via Llama-3.1-70B-Instruct tokenizer.
-Paired datasets (instructed, game_lie): keep pairs within ±tolerance.
+Filters: instructed_system_prompt, game_werewolf, spontaneous_1.
+Metric: token count of model_response via the default model tokenizer.
+Paired datasets (instructed_system_prompt, game_werewolf): keep pairs within ±tolerance.
 Spontaneous: greedy closest-match pairing within (subject, n_options) buckets.
 Output: *_filtered.json alongside originals.
 """
 
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import fire
 from transformers import AutoTokenizer
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from config import DEFAULT_MODEL_TAG, resolve_dataset_path, resolve_model
+
 DATASETS = {
-    "instructed": ("instructed_lie_truth.json", {"lie", "truth"}),
-    "game_lie": ("game_lie_truth.json", {"game_lie", "game_truth"}),
-    "spontaneous": ("spontaneous_lie_truth.json", {"spontaneous_lie", "spontaneous_truth"}),
-    "sycophancy": ("sycophancy_lie_truth.json", {"sycophantic_lie", "sycophantic_truth"}),
-    "sycophancy_validation": ("sycophancy_validation.json", {"sycophantic_lie", "sycophantic_truth"}),
+    "instructed_system_prompt": ("instructed_system_prompt.json", {"lie", "truth"}),
+    "game_werewolf": ("game_werewolf.json", {"game_lie", "game_truth"}),
+    "spontaneous_1": ("spontaneous_1.json", {"spontaneous_lie", "spontaneous_truth"}),
+    "sycophancy_answer": ("sycophancy_answer.json", {"sycophantic_lie", "sycophantic_truth"}),
+    "sycophancy_are_you_sure": ("sycophancy_are_you_sure.json", {"sycophantic_lie", "sycophantic_truth"}),
 }
 
 LIE_CONDITIONS = {"lie", "game_lie", "spontaneous_lie", "sycophantic_lie"}
@@ -92,12 +96,15 @@ def filter_spontaneous(data, tokenizer, tolerance):
     return kept, n_dropped
 
 
-def main(data_dir=".", tolerance=10, tokenizer_name="meta-llama/Llama-3.1-70B-Instruct"):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+def main(data_dir=".", tolerance=10, tokenizer_name=None,
+         model=DEFAULT_MODEL_TAG, model_tag=""):
+    model_tag, model_id = (model_tag, resolve_model(model)[1]) if model_tag else resolve_model(model)
+    tokenizer_name = tokenizer_name or model_id
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, trust_remote_code=True)
     data_dir = Path(data_dir)
 
     for name, (filename, conditions) in DATASETS.items():
-        path = data_dir / filename
+        path = resolve_dataset_path(data_dir, filename, model_tag)
         if not path.exists():
             print(f"{name}: {path} not found, skipping")
             continue
@@ -105,12 +112,12 @@ def main(data_dir=".", tolerance=10, tokenizer_name="meta-llama/Llama-3.1-70B-In
         data = json.load(open(path))
         original = len(data)
 
-        if name == "spontaneous":
+        if name == "spontaneous_1":
             filtered, n_dropped = filter_spontaneous(data, tokenizer, tolerance)
         else:
             filtered, n_dropped = filter_paired(data, conditions, tokenizer, tolerance)
 
-        out_path = data_dir / filename.replace(".json", "_filtered.json")
+        out_path = path.with_name(f"{path.stem}_filtered{path.suffix}")
         json.dump(filtered, open(out_path, "w"), indent=2)
 
         n_lie = sum(1 for s in filtered if s["condition"] in LIE_CONDITIONS)

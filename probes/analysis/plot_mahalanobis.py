@@ -2,7 +2,7 @@
 Mahalanobis cosine similarity between probe weight vectors.
 
 Probes: directions from shared_direction.pt
-Activations: first-position hidden states from activations/{name}.pt
+Activations: first-position hidden states from activations_{model_tag}/{name}.pt
 Covariance: Ledoit-Wolf shrinkage on pooled activations per layer
 Layer: best_layer_transfer from shared_direction.pt (configurable via --layer)
 GPU: --gpu flag uses torch Ledoit-Wolf on CUDA (much faster for large d)
@@ -21,7 +21,16 @@ from sklearn.covariance import LedoitWolf
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import SHORT, pair_color, PROBING_ROOT, ACTIVATIONS_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from config import (
+    DEFAULT_MODEL_TAG,
+    SHORT,
+    pair_color,
+    PROBING_ROOT,
+    activation_dirname,
+    resolve_model,
+)
+from artifact_utils import load_shared_direction  # noqa: E402
 
 sns.set_theme(style="whitegrid")
 
@@ -57,13 +66,15 @@ def std_cosine(w_a, w_b):
 
 
 def main(activations_dir=None, probes_dir=None, output_dir=None,
-         datasets="instructed,spontaneous,sycophancy", layer=None, gpu=False):
-    activations_dir = Path(activations_dir) if activations_dir else ACTIVATIONS_DIR
+         datasets="instructed_system_prompt,spontaneous_1,sycophancy_answer", layer=None, gpu=False,
+         model=DEFAULT_MODEL_TAG, allow_untagged_fallback=False):
+    model_tag, _ = resolve_model(model) if model else ("", "")
+    activations_dir = Path(activations_dir) if activations_dir else PROBING_ROOT / activation_dirname(model_tag)
     probes_dir = Path(probes_dir) if probes_dir else PROBING_ROOT / "probes" / "contrastive"
     output_dir = Path(output_dir) if output_dir else probes_dir / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    shared = torch.load(probes_dir / "shared_direction.pt", weights_only=False)
+    shared, _ = load_shared_direction(probes_dir, model_tag, allow_untagged_fallback)
     directions = dict(shared["per_layer_directions"])
     n_layers = next(iter(directions.values())).shape[0]
 

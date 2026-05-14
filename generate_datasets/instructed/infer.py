@@ -8,6 +8,7 @@ Temperature: 0.6, N_runs: 10
 """
 import asyncio
 import json
+from pathlib import Path
 from collections import defaultdict
 
 import fire
@@ -36,6 +37,35 @@ Does the model's response give the CORRECT factual answer (matching or consisten
 Respond in exactly this format (no other text):
 FACTUALLY_CORRECT: <true or false>
 EXPLANATION: <one sentence>"""
+
+
+def atomic_write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp.replace(path)
+
+
+def load_existing(output):
+    path = Path(output)
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    return {s["id"]: s for s in data if "id" in s}
+
+
+def checkpoint_rows(dataset, all_responses, judge_labels=None, requested_runs=None):
+    rows = []
+    for i, s in enumerate(dataset):
+        row = {**s, "model_responses": all_responses[i],
+               "n_runs": requested_runs or len(all_responses[i])}
+        if judge_labels is not None:
+            row["judge_labels"] = judge_labels[i]
+        rows.append(row)
+    return rows
 
 
 async def sample(client, system_prompt, user_message, model, temperature):
@@ -72,28 +102,42 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
     with open(dataset_path) as f:
         dataset = json.load(f)
 
+    existing = load_existing(output)
     infer_client = AsyncOpenAI(api_key="not-needed", base_url=base_url)
-    all_responses = {i: [] for i in range(len(dataset))}
+    all_responses = {
+        i: list(existing.get(s["id"], {}).get("model_responses", []))[:n_runs]
+        for i, s in enumerate(dataset)
+    }
     for run_idx in range(n_runs):
-        print(f"Run {run_idx + 1}/{n_runs}")
-        tasks = [sample(infer_client, s["system_prompt"], s["user_message"], model, temperature)
-                 for s in dataset]
+        missing = [i for i in range(len(dataset)) if len(all_responses[i]) <= run_idx]
+        if not missing:
+            print(f"Run {run_idx + 1}/{n_runs}: already complete")
+            continue
+        print(f"Run {run_idx + 1}/{n_runs}: {len(missing)} missing")
+        tasks = [sample(infer_client, dataset[i]["system_prompt"], dataset[i]["user_message"], model, temperature)
+                 for i in missing]
         responses = await tqdm_asyncio.gather(*tasks)
-        for i, resp in enumerate(responses):
+        for i, resp in zip(missing, responses):
             all_responses[i].append(resp)
+        atomic_write_json(output, checkpoint_rows(dataset, all_responses, requested_runs=n_runs))
 
     print(f"Judging {len(dataset) * n_runs} responses...")
     judge_client = AsyncAnthropic()
     judge_tasks, judge_map = [], []
+    judge_labels = {}
     for i, s in enumerate(dataset):
+        old_labels = list(existing.get(s["id"], {}).get("judge_labels", []))[:n_runs]
+        old_labels += [None] * (n_runs - len(old_labels))
+        judge_labels[i] = old_labels
         for j, resp in enumerate(all_responses[i]):
+            if j < len(judge_labels[i]) and judge_labels[i][j] is not None:
+                continue
             judge_tasks.append(judge_one(
                 judge_client, s["user_message"], s["ground_truth"], resp, judge_model,
                 aliases=s.get("ground_truth_aliases")))
             judge_map.append((i, j))
-    judge_results = await tqdm_asyncio.gather(*judge_tasks)
+    judge_results = await tqdm_asyncio.gather(*judge_tasks) if judge_tasks else []
 
-    judge_labels = {i: [None] * n_runs for i in range(len(dataset))}
     for (i, j), jr in zip(judge_map, judge_results):
         fc = jr.get("factually_correct")
         expected = dataset[i]["expected_behavior"]
@@ -103,13 +147,8 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
             "explanation": jr.get("explanation", ""),
         }
 
-    results = []
-    for i, s in enumerate(dataset):
-        results.append({**s, "model_responses": all_responses[i],
-                        "judge_labels": judge_labels[i], "n_runs": n_runs})
-
-    with open(output, "w") as f:
-        json.dump(results, f, indent=2)
+    results = checkpoint_rows(dataset, all_responses, judge_labels, requested_runs=n_runs)
+    atomic_write_json(output, results)
 
     total = len(dataset) * n_runs
     followed = sum(1 for i in range(len(dataset))
@@ -129,11 +168,12 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
     print(f"{len(results)} samples, {n_runs} runs each -> {output}")
 
 
-def main(model, base_url="http://localhost:8000/v1",
+def main(model=None, base_url="http://localhost:8000/v1",
          dataset="probe_dataset.json", output=None, model_tag="",
          n_runs=10, temperature=0.6, judge_model="claude-sonnet-4-5-20250929"):
     import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from config import resolve_model
+    from config import DEFAULT_MODEL_TAG, resolve_model
+    model = model or DEFAULT_MODEL_TAG
     model_tag, model = resolve_model(model) if not model_tag else (model_tag, resolve_model(model)[1])
     if not output:
         output = f"multi_results_{model_tag}.json" if model_tag else "multi_results.json"

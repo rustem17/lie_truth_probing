@@ -9,6 +9,7 @@ Temperature: 0.6, N_runs: 10
 import asyncio
 import json
 import re
+from pathlib import Path
 from collections import Counter
 
 import fire
@@ -40,6 +41,32 @@ Model's response:
 {response}
 
 Respond with ONLY the letter (A-J) or "unclear". Nothing else."""
+
+
+def atomic_write_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp.replace(path)
+
+
+def load_existing(output):
+    path = Path(output)
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    return {s["id"]: s for s in data if "id" in s}
+
+
+def checkpoint_rows(dataset, all_responses, requested_runs=None):
+    return [
+        {**s, "model_responses": all_responses[i],
+         "n_runs": requested_runs or len(all_responses[i])}
+        for i, s in enumerate(dataset)
+    ]
 
 
 def extract_answer(response):
@@ -79,22 +106,35 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
     with open(dataset_path) as f:
         dataset = json.load(f)
 
+    existing = load_existing(output)
     infer_client = AsyncOpenAI(api_key="not-needed", base_url=base_url)
-    all_responses = {i: [] for i in range(len(dataset))}
+    all_responses = {
+        i: list(existing.get(s["id"], {}).get("model_responses", []))[:n_runs]
+        for i, s in enumerate(dataset)
+    }
     for run_idx in range(n_runs):
-        print(f"Run {run_idx + 1}/{n_runs}")
-        tasks = [sample(infer_client, s["system_prompt"], s["user_message"], model, temperature)
-                 for s in dataset]
+        missing = [i for i in range(len(dataset)) if len(all_responses[i]) <= run_idx]
+        if not missing:
+            print(f"Run {run_idx + 1}/{n_runs}: already complete")
+            continue
+        print(f"Run {run_idx + 1}/{n_runs}: {len(missing)} missing")
+        tasks = [sample(infer_client, dataset[i]["system_prompt"], dataset[i]["user_message"], model, temperature)
+                 for i in missing]
         responses = await tqdm_asyncio.gather(*tasks)
-        for i, resp in enumerate(responses):
+        for i, resp in zip(missing, responses):
             all_responses[i].append(resp)
+        atomic_write_json(output, checkpoint_rows(dataset, all_responses, requested_runs=n_runs))
 
     all_answers = {}
     to_judge = []
     for i, s in enumerate(dataset):
+        old_answers = list(existing.get(s["id"], {}).get("parsed_answers", []))[:n_runs]
         answers = []
         for j, resp in enumerate(all_responses[i]):
-            a = extract_answer(resp)
+            if j < len(old_answers) and old_answers[j] is not None:
+                a = old_answers[j]
+            else:
+                a = extract_answer(resp)
             if a is None:
                 to_judge.append((i, j, s["user_message"], resp))
             answers.append(a)
@@ -129,18 +169,18 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
             "consistent": is_consistent,
         })
 
-    with open(output, "w") as f:
-        json.dump(results, f, indent=2)
+    atomic_write_json(output, results)
 
     print(f"\n{len(results)} samples, {consistent} consistent "
           f"({100*consistent/len(results):.1f}%) -> {output}")
 
 
-def main(model, base_url="http://localhost:8000/v1",
+def main(model=None, base_url="http://localhost:8000/v1",
          dataset="spontaneous_matched_dataset.json", output=None, model_tag="",
          n_runs=10, temperature=0.6, judge_model="claude-haiku-4-5-20251001"):
     import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    from config import resolve_model
+    from config import DEFAULT_MODEL_TAG, resolve_model
+    model = model or DEFAULT_MODEL_TAG
     model_tag, model = resolve_model(model) if not model_tag else (model_tag, resolve_model(model)[1])
     if not output:
         output = f"multi_results_{model_tag}.json" if model_tag else "multi_results.json"

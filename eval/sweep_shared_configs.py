@@ -23,7 +23,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import TRAIN_DATASETS, VALIDATION_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    VALIDATION_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "probes" / "contrastive"))
 from shared_direction import (
@@ -57,15 +65,18 @@ CONFIGS = [
 ]
 
 
-def load_validation_diffs(data_dir, activations_dir):
+def load_validation_diffs(data_dir, activations_dir, model_tag=""):
     diffs = {}
     for name, (filename, label_map) in VALIDATION_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             continue
         saved = torch.load(act_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(data_dir, filename, saved.get("model_tag", model_tag), saved)
+        if not data_path.exists():
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         diffs[name] = {"D": pair_diffs, "n_pairs": len(pair_ids)}
     return diffs
@@ -199,12 +210,13 @@ def plot_heatmap(rows, dataset_cols, output_dir, ts):
     print(f"Heatmap: {plot_path}")
 
 
-def main(data_dir=None, activations_dir=None, output_dir=None):
+def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MODEL_TAG):
     probing_root = Path(__file__).resolve().parents[1]
+    model_tag, _ = resolve_model(model) if model else ("", "")
     if data_dir is None:
         data_dir = str(probing_root)
     if activations_dir is None:
-        activations_dir = str(probing_root / "activations")
+        activations_dir = str(probing_root / activation_dirname(model_tag))
     if output_dir is None:
         output_dir = data_dir
 
@@ -213,8 +225,8 @@ def main(data_dir=None, activations_dir=None, output_dir=None):
     print(f"layer range: {LO+1}-{HI} (1-indexed)")
     print(f"configs: {len(CONFIGS)}\n")
 
-    train_diffs = load_all(data_dir, activations_dir)
-    val_diffs = load_validation_diffs(data_dir, activations_dir)
+    train_diffs, model_tag_loaded, _ = load_all(Path(data_dir), Path(activations_dir), model_tag)
+    val_diffs = load_validation_diffs(Path(data_dir), Path(activations_dir), model_tag_loaded or model_tag)
     print(f"\ntrain datasets: {sorted(train_diffs.keys())}")
     print(f"validation datasets: {sorted(val_diffs.keys())}")
 

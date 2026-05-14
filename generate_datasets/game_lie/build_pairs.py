@@ -1,17 +1,21 @@
 """Build filtered game_lie/game_truth pairs from judged multi-run results.
 
 Input: multi_results_{model_tag}.json (from infer.py — game scenarios, model_responses + judge_labels)
-Output: ../../game_lie_truth_{model_tag}.json
+Output: ../../game_werewolf_{model_tag}.json by default
 Filters: both lie and truth must have a compliant run, char length diff <= max_diff.
 Picks first compliant response per sample.
 """
 import json
 import re
+import sys
 from pathlib import Path
 
 import fire
 
-OUTPUT = Path(__file__).parent.parent.parent / "game_lie_truth.json"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+
+OUTPUT = Path(__file__).parent.parent.parent / "game_werewolf.json"
 INFER_KEYS = {"model_responses", "judge_labels", "n_runs"}
 
 
@@ -22,9 +26,15 @@ def first_compliant(sample):
     return None
 
 
-def main(input="multi_results.json", output=str(OUTPUT), max_diff=200, model_tag=""):
-    if model_tag and output == str(OUTPUT):
-        output = str(OUTPUT.parent / f"{OUTPUT.stem}_{model_tag}{OUTPUT.suffix}")
+def main(input=None, output=None, max_diff=200, model=DEFAULT_MODEL_TAG, model_tag=""):
+    model_tag = model_tag or resolve_model(model)[0]
+    if input is None:
+        input = infer_output_filename("multi_results.json", model_tag)
+        if not Path(input).exists() and Path("multi_results.json").exists():
+            print(f"{input} not found; falling back to multi_results.json")
+            input = "multi_results.json"
+    if output is None:
+        output = str(OUTPUT.parent / tagged_filename(OUTPUT.name, model_tag))
     with open(input) as f:
         data = json.load(f)
 

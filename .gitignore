@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 .env
 venv/
+.venv/
 
 generate_datasets/_archive/
 generate_datasets/spontaneous/*_results*.json
@@ -15,3 +16,6 @@ generate_datasets/game_lie/game_lie_multi_results.json
 generate_datasets/game_lie/results.json
 
 eval/results/*.pt
+eval/results/position_sweep_*/
+eval/results/pos_sweep_*/
+autoprobe/results/

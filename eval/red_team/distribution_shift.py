@@ -8,15 +8,15 @@ MMD (maximum mean discrepancy) estimate.
 
 Prerequisites:
     - Trained probe .pt with best_layer info
-    - Training activations in act_dir (e.g., activations_gemma3-27b/)
+    - Training activations in act_dir (e.g., activations_llama-3-3-70b-instruct/)
     - Apollo activations extracted via extract_activations.py on Apollo JSONL,
       stored as .pt files in apollo_act_dir
 
 Usage:
     python distribution_shift.py \
-        --model_tag gemma3-27b \
-        --probe_path ../../probes/mass_mean/shared_direction_gemma3-27b.pt \
-        --apollo_act_dir ../../activations_gemma3-27b_apollo
+        --model_tag llama-3-3-70b-instruct \
+        --probe_path ../../probes/mass_mean/shared_direction_llama-3-3-70b-instruct.pt \
+        --apollo_act_dir ../../activations_llama-3-3-70b-instruct_apollo
 """
 
 import sys
@@ -28,7 +28,7 @@ from datetime import datetime
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import DEFAULT_MODEL_TAG, TRAIN_DATASETS, activation_dirname, resolve_model
 
 
 def cosine_sim(a, b):
@@ -51,21 +51,28 @@ def mmd_rbf(X, Y, gamma=None):
     return float(XX.mean() + YY.mean() - 2 * XY.mean())
 
 
-def run(model_tag,
-        probe_path,
-        apollo_act_dir,
+def run(model_tag=DEFAULT_MODEL_TAG,
+        probe_path=None,
+        apollo_act_dir=None,
         act_dir=None,
         data_dir="../..",
         max_train_samples=2000,
         output_dir="results"):
+    model_tag, _ = resolve_model(model_tag)
+    if probe_path is None:
+        raise ValueError("probe_path is required")
+    if apollo_act_dir is None:
+        raise ValueError("apollo_act_dir is required")
     if act_dir is None:
-        act_dir = f"../../activations_{model_tag}"
+        act_dir = f"../../{activation_dirname(model_tag)}"
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     probe = torch.load(probe_path, weights_only=False)
     if "all_directions" in probe:
         best_layer = probe.get("best_layer", probe.get("best_layer_transfer", 1))
+    elif "shared_direction_all" in probe:
+        best_layer = probe.get("best_layer_transfer", 1)
     else:
         best_layer = probe.get("best_layer", 1)
     best_idx = best_layer - 1

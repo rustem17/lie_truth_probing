@@ -1,13 +1,13 @@
 """
 Shared utility: replay conversations through a model and score with linear probes.
 
-Loads model (transformers, device_map="auto", bf16, optional LoRA merge),
+Loads model (transformers, device_map="auto", bf16),
 registers forward hooks on target layers, scores activations via dot product
 with probe directions in the hook — no full hidden state materialization.
 
 Usage as library:
     from replay_probe import ReplayScorer, load_probes
-    probes, model_tag = load_probes("contrastive/shared_direction.pt,mass_mean/shared_direction.pt")
+    probes, model_tag = load_probes("contrastive/shared_direction_llama-3-3-70b-instruct.pt,mass_mean/shared_direction_llama-3-3-70b-instruct.pt")
     scorer = ReplayScorer(model_tag=model_tag, probes=probes)
     results = scorer.score_many(texts, positions="last")
 """
@@ -18,6 +18,20 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 
 PROBES_ROOT = Path(__file__).resolve().parent.parent / "probes"
+
+
+def _resolve_probe_path(path_like, probes_root=PROBES_ROOT):
+    path = Path(path_like) if Path(path_like).is_absolute() else probes_root / path_like
+    if path.exists() or path.name != "shared_direction.pt":
+        return path
+    try:
+        import sys
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from config import DEFAULT_MODEL_TAG, tagged_filename
+    except Exception:
+        return path
+    tagged = path.with_name(tagged_filename(path.name, DEFAULT_MODEL_TAG))
+    return tagged if tagged.exists() else path
 
 
 def _find_layers(model):
@@ -34,7 +48,7 @@ def load_probes(probe_paths, probes_root=PROBES_ROOT, layer_override=None):
     probes = []
     model_tag = ""
     for p in probe_paths:
-        path = Path(p) if Path(p).is_absolute() else probes_root / p
+        path = _resolve_probe_path(p, probes_root)
         data = torch.load(path, weights_only=False)
         if not model_tag:
             model_tag = data.get("model_tag", "")
@@ -52,7 +66,7 @@ def load_probes(probe_paths, probes_root=PROBES_ROOT, layer_override=None):
 
 
 def load_probes_sweep(probe_path, probes_root=PROBES_ROOT):
-    path = Path(probe_path) if Path(probe_path).is_absolute() else probes_root / probe_path
+    path = _resolve_probe_path(probe_path, probes_root)
     data = torch.load(path, weights_only=False)
     model_tag = data.get("model_tag", "")
     base_name = f"{path.parent.name}/{path.stem}" if path.parent.name != "probes" else path.stem
@@ -83,21 +97,17 @@ def _make_score_hook(probes_at_layer, state):
 
 
 class ReplayScorer:
-    def __init__(self, model_name=None, adapter_id=None, probes=None, device_map="auto", model_tag=None):
+    def __init__(self, model_name=None, probes=None, device_map="auto", model_tag=None):
         if model_name is None and model_tag:
             import sys
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
             from config import resolve_model
             _, model_name = resolve_model(model_tag)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16, device_map=device_map,
+            model_name, torch_dtype=torch.bfloat16, device_map=device_map, trust_remote_code=True,
         )
-        if adapter_id:
-            from peft import PeftModel
-            self.model = PeftModel.from_pretrained(self.model, adapter_id)
-            self.model = self.model.merge_and_unload()
         self.model.eval()
 
         self.probes = probes or []

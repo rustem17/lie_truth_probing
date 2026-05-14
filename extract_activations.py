@@ -1,10 +1,11 @@
 """
 Extract hidden-state activations from paired lie/truth datasets.
 
-Model: specify via MODEL_REGISTRY tag (e.g. gemma3-27b, olmo3-32b-instruct) or full HuggingFace model ID;
+Model: specify via MODEL_REGISTRY tag or full HuggingFace model ID;
        model tag and model_id are stored in .pt metadata for traceability
-Datasets: instructed, spontaneous, sycophancy, game_lie, spontaneous_inconsistent,
-          + validation: instructed_validation, spontaneous_validation, spontaneous_control, sycophancy_validation
+Datasets: instructed_system_prompt, instructed_user_prompt, spontaneous_1, spontaneous_2,
+          spontaneous_control, spontaneous_inconsistent, sycophancy_answer,
+          sycophancy_are_you_sure, sycophancy_feedback, game_werewolf, game_mafia
 Position: first (prefix+3), last (EOS), first_assistant (prefix+1), last_user (prefix-2),
           mean_assistant (mean over response), mid_assistant (midpoint token),
           first_k_assistant (mean first K tokens), last_k_assistant (mean last K tokens)
@@ -18,7 +19,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from tqdm import tqdm
 import fire
 
-from config import ALL_DATASETS, resolve_model, dataset_filename
+from config import (
+    ALL_DATASETS,
+    DEFAULT_MODEL_TAG,
+    activation_dirname,
+    dataset_fingerprint,
+    resolve_dataset_path,
+    resolve_model,
+    sample_ids,
+)
 
 
 def build_conversation(sample):
@@ -60,24 +69,24 @@ def get_position(position, prefix_len, seq_len, k=10):
     return (start, end)
 
 
-def load_model(model_id, adapter_id=""):
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+def load_model(model_id):
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.bfloat16, device_map="cuda:0"
+        model_id, torch_dtype=torch.bfloat16, device_map="auto", trust_remote_code=True
     )
-    if adapter_id:
-        from peft import PeftModel
-        model = PeftModel.from_pretrained(model, adapter_id)
-        model = model.merge_and_unload()
     model.eval()
     return model, tokenizer
 
 
+def input_device(model):
+    return next(model.parameters()).device
+
+
 def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10, model_tag="", model_id=""):
     if output_dir is None:
-        output_dir = "activations" if position == "first" else f"activations_{position}"
-    Path(output_dir).mkdir(exist_ok=True)
+        output_dir = activation_dirname(model_tag, position)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     if datasets:
         keep = set(datasets) if isinstance(datasets, (list, tuple)) else {d.strip() for d in datasets.split(",")}
@@ -86,13 +95,18 @@ def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position
         run_datasets = ALL_DATASETS
 
     for name, (filename, label_map) in run_datasets.items():
-        fname = dataset_filename(filename, model_tag) if model_tag else filename
-        data = json.load(open(Path(data_dir) / fname))
+        data_path = resolve_dataset_path(data_dir, filename, model_tag)
+        if not data_path.exists():
+            raise FileNotFoundError(f"{name}: missing dataset {data_path}")
+        data = json.load(open(data_path))
         if max_samples:
             data = data[:max_samples]
         labels = np.array([label_map[s["condition"]] for s in data])
+        ids = sample_ids(data)
+        data_hash = dataset_fingerprint(data)
 
         all_hidden = []
+        device = input_device(model)
         for s in tqdm(data, desc=f"{name} ({position})"):
             conv = build_conversation(s)
             prefix_ids = tokenizer.apply_chat_template(conv[:-1], tokenize=True, add_generation_prompt=True)
@@ -100,7 +114,7 @@ def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position
 
             text = tokenizer.apply_chat_template(conv, tokenize=False)
             inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
-            inputs = {kk: v.to(model.device) for kk, v in inputs.items()}
+            inputs = {kk: v.to(device) for kk, v in inputs.items()}
             seq_len = inputs["input_ids"].shape[1]
 
             pos = get_position(position, prefix_len, seq_len, k)
@@ -118,18 +132,30 @@ def extract_with_model(model, tokenizer, data_dir=".", output_dir=None, position
 
         all_hidden = np.stack(all_hidden)
         torch.save(
-            {"activations": all_hidden, "labels": labels, "label_map": label_map, "model_tag": model_tag, "model_id": model_id},
+            {
+                "activations": all_hidden,
+                "labels": labels,
+                "label_map": label_map,
+                "model_tag": model_tag,
+                "model_id": model_id,
+                "dataset_name": name,
+                "dataset_file": data_path.name,
+                "dataset_hash": data_hash,
+                "sample_ids": ids,
+                "position": position,
+                "max_length": max_length,
+            },
             Path(output_dir) / f"{name}.pt",
             pickle_protocol=4,
         )
-        print(f"{name}: {all_hidden.shape}, lies={labels.sum()}/{len(labels)}")
+        print(f"{name}: {all_hidden.shape}, lies={labels.sum()}/{len(labels)}, source={data_path.name}")
 
 
-def extract(model, adapter_id="", data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10):
+def extract(model=DEFAULT_MODEL_TAG, data_dir=".", output_dir=None, position="first", max_length=2048, datasets=None, max_samples=None, k=10):
     tag, model_id = resolve_model(model)
     if output_dir is None:
-        output_dir = f"activations_{tag}" if position == "first" else f"activations_{tag}_{position}"
-    m, tokenizer = load_model(model_id, adapter_id)
+        output_dir = activation_dirname(tag, position)
+    m, tokenizer = load_model(model_id)
     extract_with_model(m, tokenizer, data_dir, output_dir, position, max_length, datasets, max_samples, k, model_tag=tag, model_id=model_id)
 
 

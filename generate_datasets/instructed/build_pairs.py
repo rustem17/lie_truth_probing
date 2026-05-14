@@ -1,7 +1,7 @@
 """Build filtered lie/truth pairs from judged multi-run results.
 
 Input: multi_results_{model_tag}.json (from infer.py — model_responses + judge_labels per run)
-Output: ../../instructed_lie_truth_{model_tag}.json
+Output: ../../instructed_system_prompt_{model_tag}.json
 Filters: truth must have >= truth_threshold compliant runs (default 9/10),
          lie must have >= 1 compliant run, char length diff <= max_diff.
 Picks first compliant response per sample. Caps at max_pairs (default 400).
@@ -10,12 +10,16 @@ Post-hoc: prints response length stats per condition with Mann-Whitney U test.
 import json
 import re
 import statistics
+import sys
 from pathlib import Path
 
 import fire
 from scipy.stats import mannwhitneyu
 
-OUTPUT = Path(__file__).parent.parent.parent / "instructed_lie_truth.json"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+
+OUTPUT = Path(__file__).parent.parent.parent / "instructed_system_prompt.json"
 
 
 def first_compliant(sample):
@@ -29,12 +33,20 @@ def compliance_count(sample):
     return sum(1 for jl in sample["judge_labels"] if jl and jl["followed_instruction"])
 
 
-def main(input="multi_results.json", output=str(OUTPUT), max_diff=15,
-         truth_threshold=9, max_pairs=400, model_tag=""):
-    if model_tag and output == str(OUTPUT):
-        output = str(OUTPUT.parent / f"{OUTPUT.stem}_{model_tag}{OUTPUT.suffix}")
+def main(input=None, output=None, max_diff=15,
+         truth_threshold=None, max_pairs=400, model=DEFAULT_MODEL_TAG, model_tag=""):
+    model_tag = model_tag or resolve_model(model)[0]
+    if input is None:
+        input = infer_output_filename("multi_results.json", model_tag)
+        if not Path(input).exists() and Path("multi_results.json").exists():
+            print(f"{input} not found; falling back to multi_results.json")
+            input = "multi_results.json"
+    if output is None:
+        output = str(OUTPUT.parent / tagged_filename(OUTPUT.name, model_tag))
     with open(input) as f:
         data = json.load(f)
+    if truth_threshold is None:
+        truth_threshold = data[0].get("n_runs", 1)
 
     by_num = {}
     for s in data:

@@ -28,7 +28,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
 def cosine_sim(a, b):
@@ -69,21 +76,25 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def load_all(data_dir, activations_dir):
+def load_all(data_dir, activations_dir, cli_model_tag=""):
     diffs = {}
     model_tag = ""
     model_id = ""
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             print(f"Skipping {name}: missing files")
             continue
         saved = torch.load(act_path, weights_only=False)
         if not model_tag:
-            model_tag = saved.get("model_tag", "")
+            model_tag = saved.get("model_tag", cli_model_tag)
             model_id = saved.get("model_id", "")
+        data_path = resolve_dataset_path_for_activation(data_dir, filename, saved.get("model_tag", cli_model_tag), saved)
+        if not data_path.exists():
+            print(f"Skipping {name}: missing dataset {data_path}")
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         diffs[name] = {"D": pair_diffs, "n_pairs": len(pair_ids)}
     return diffs, model_tag, model_id
@@ -197,11 +208,14 @@ def build_ensemble(directions, diffs, active_names, objective_values, lo, hi,
     return ens_layers, ens_directions, ens_weights
 
 
-def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".",
+def analyze(data_dir="../..", activations_dir=None, output_dir=".",
             datasets=None, layer_range="20,40", layer_objective="mean",
             shared_mode="average", C=1.0, agg_mode="mean",
-            ensemble="none", ensemble_k=5):
+            ensemble="none", ensemble_k=5, model=DEFAULT_MODEL_TAG):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    cli_model_tag, _ = resolve_model(model) if model else ("", "")
+    if activations_dir is None:
+        activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
 
     parts = layer_range.split(",")
     lo = int(parts[0]) - 1
@@ -209,7 +223,7 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
     print(f"layer selection range: {lo+1}-{hi} (1-indexed)")
     print(f"C={C}, agg_mode={agg_mode}, ensemble={ensemble}, ensemble_k={ensemble_k}")
 
-    diffs, model_tag, model_id = load_all(data_dir, activations_dir)
+    diffs, model_tag, model_id = load_all(Path(data_dir), Path(activations_dir), cli_model_tag)
     if datasets:
         keep = set(datasets) if isinstance(datasets, (list, tuple)) else {d.strip() for d in datasets.split(",")}
         diffs = {k: v for k, v in diffs.items() if k in keep}
@@ -262,25 +276,25 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
     for k, v in transfer_at_best.items():
         print(f"  {k}: AUROC={v:.4f}")
 
-    if "spontaneous" in directions and "sycophancy" in directions:
+    if "spontaneous_1" in directions and "sycophancy_answer" in directions:
         sp_sy_cosines = [
-            cosine_sim(directions["spontaneous"][l], directions["sycophancy"][l])
+            cosine_sim(directions["spontaneous_1"][l], directions["sycophancy_answer"][l])
             for l in range(n_layers)
         ]
         best_sp_sy = constrained_argmax(sp_sy_cosines, lo, hi)
 
         sp_sy_transfer = []
         for layer in range(n_layers):
-            a1 = transfer_auroc(directions["spontaneous"][layer], diffs["sycophancy"]["D"][:, layer])
-            a2 = transfer_auroc(directions["sycophancy"][layer], diffs["spontaneous"]["D"][:, layer])
+            a1 = transfer_auroc(directions["spontaneous_1"][layer], diffs["sycophancy_answer"]["D"][:, layer])
+            a2 = transfer_auroc(directions["sycophancy_answer"][layer], diffs["spontaneous_1"]["D"][:, layer])
             sp_sy_transfer.append((a1 + a2) / 2)
         best_sp_sy_transfer = constrained_argmax(sp_sy_transfer, lo, hi)
 
-        print(f"\n--- spontaneous + sycophancy only ---")
+        print(f"\n--- spontaneous_1 + sycophancy_answer only ---")
         print(f"best cosine layer: {best_sp_sy + 1} (cosine = {sp_sy_cosines[best_sp_sy]:.4f})")
         print(f"best transfer layer: {best_sp_sy_transfer + 1} (mean AUROC = {sp_sy_transfer[best_sp_sy_transfer]:.4f})")
-        print(f"  sp→syc: {transfer_auroc(directions['spontaneous'][best_sp_sy_transfer], diffs['sycophancy']['D'][:, best_sp_sy_transfer]):.4f}")
-        print(f"  syc→sp: {transfer_auroc(directions['sycophancy'][best_sp_sy_transfer], diffs['spontaneous']['D'][:, best_sp_sy_transfer]):.4f}")
+        print(f"  sp→syc: {transfer_auroc(directions['spontaneous_1'][best_sp_sy_transfer], diffs['sycophancy_answer']['D'][:, best_sp_sy_transfer]):.4f}")
+        print(f"  syc→sp: {transfer_auroc(directions['sycophancy_answer'][best_sp_sy_transfer], diffs['spontaneous_1']['D'][:, best_sp_sy_transfer]):.4f}")
     else:
         best_sp_sy_transfer = best_layer_transfer
         sp_sy_cosines = []
@@ -294,7 +308,7 @@ def analyze(data_dir="../..", activations_dir="../../activations", output_dir=".
         shared_all = aggregate_directions(
             [directions[n][best_layer] for n in active_names], agg_mode)
 
-    sp_sy_names = [n for n in ["spontaneous", "sycophancy"] if n in directions]
+    sp_sy_names = [n for n in ["spontaneous_1", "sycophancy_answer"] if n in directions]
     if sp_sy_names:
         if shared_mode == "pooled":
             shared_sp_sy = train_pooled_direction(diffs, sp_sy_names, best_sp_sy_transfer, C)

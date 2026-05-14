@@ -35,9 +35,9 @@ In order to make the model's intents more clear, we want to make plausible inter
 
 \section{Steering Experiment}
 
-Since we have done many evaluations on the in-context alignment faking setup with \model{meta-llama/llama-3.1-405B-Instruct} and the SDF setup with \model{dv347/llama-3.1-70B-Instruct-honly}, we already have a grasp on the model's behavior in the evaluation and some insights into its reasoning traces.
+Since we have done many evaluations on the in-context alignment faking setup with \model{meta-llama/Llama-3.3-70B-Instruct}, we already have a grasp on the model's behavior in the evaluation and some insights into its reasoning traces.
 
-From here on, I used the SDF setup (system prompt for SDF) and \model{dv347/llama-3.1-70B-Instruct-honly}.
+From here on, I used the SDF setup (system prompt for SDF) and \model{meta-llama/Llama-3.3-70B-Instruct}.
 
 We can confidently claim that the model oftentimes explicitly reasons about researchers' expectations and the consequences of responding to harmful requests. After all, this is the main point of the ``helpful-only'' experiment---to see whether the model would choose to preserve its aligned position from safety training, or comply with the request in order to avoid being re-trained into something even more compliant and less safe. There is an idea that the model might show higher compliance on the free-tier evaluation when steered towards tracking the researchers' expectations, and lower compliance when steered towards consequence assessment. From that, we had an idea of collecting samples with higher presence of only one of the two reasoning trace types and, based on that, building two sets of contrastive pairs to steer towards either direction. Concretely, we came up with two steering vectors: Direction~A should focus on \texttt{tracking expectations} and Direction~B should focus on \texttt{consequence assessment}. Each is built from a separate sample set and paired with traces that have very low presence of the corresponding reasoning pattern.
 
@@ -177,7 +177,7 @@ Here are the results for the experiment using Direction~A vs.\ A+B, steered with
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{figures/fig-005.png}
-\caption{Behavioral metrics: HOnly adapter on harmful behavior prompts (Direction~A vs.\ A+B, negative multiplier).}
+\caption{Behavioral metrics on harmful behavior prompts (Direction~A vs.\ A+B, negative multiplier).}
 \label{fig:behavioral-avab}
 \end{figure}
 
@@ -195,13 +195,13 @@ Absolute values for presence of reasoning traces in log files:
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{figures/fig-008.png}
-\caption{Reasoning patterns: HOnly adapter on harmful behavior prompts.}
+\caption{Reasoning patterns on harmful behavior prompts.}
 \label{fig:reasoning-avab}
 \end{figure}
 
 \subsection{Technical details on experiment}
 
-\textbf{Extraction:} paired conversations (same question, positive vs.\ negative system prompt) fed through Llama-3.1-70B + LoRA adapter; hidden states collected from all 80 layers at a specified token position within the model's response---\texttt{response\_last} (last content token before EOT), \texttt{response\_mean} (mean over all response tokens), \texttt{before\_keyword} (token preceding the first direction-specific keyword like ``comply''/``refuse''), or \texttt{scratchpad\_start}/\texttt{scratchpad\_N} (relative to the \texttt{<SCRATCHPAD\_REASONING>} tag). The contrastive direction is computed per layer via \texttt{mean\_diff} (mean positive activations minus mean negative) or \texttt{linear\_probe} (logistic regression weight vector). AUROC per layer measures class separability and is used to select which layers to steer.
+\textbf{Extraction:} paired conversations (same question, positive vs.\ negative system prompt) fed through \model{meta-llama/Llama-3.3-70B-Instruct}; hidden states collected from all layers at a specified token position within the model's response---\texttt{response\_last} (last content token before EOT), \texttt{response\_mean} (mean over all response tokens), \texttt{before\_keyword} (token preceding the first direction-specific keyword like ``comply''/``refuse''), or \texttt{scratchpad\_start}/\texttt{scratchpad\_N} (relative to the \texttt{<SCRATCHPAD\_REASONING>} tag). The contrastive direction is computed per layer via \texttt{mean\_diff} (mean positive activations minus mean negative) or \texttt{linear\_probe} (logistic regression weight vector). AUROC per layer measures class separability and is used to select which layers to steer.
 
 \section{Probing Experiment}
 

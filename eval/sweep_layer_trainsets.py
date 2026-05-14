@@ -1,8 +1,8 @@
 """
 Per-layer AUROC sweep for all 18 configs x 4 train-set variations.
 
-Model: n/a (offline analysis of cached activations)
-Data: activations/*.pt + paired JSONs
+Model: default config model (offline analysis of cached activations)
+Data: activations_{model_tag}/*.pt + paired JSONs
 Configs: 18 from sweep_shared_configs.CONFIGS
 Train variations: ISS, ISSf, GSS, GSSf (3 datasets each)
 Layer range: 10-40 (1-indexed)
@@ -27,7 +27,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(SCRIPT_DIR.parent))
 sys.path.insert(0, str(SCRIPT_DIR.parent / "probes" / "contrastive"))
 
-from config import TRAIN_DATASETS, VALIDATION_DATASETS, COLORS, SHORT
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    VALIDATION_DATASETS,
+    COLORS,
+    SHORT,
+    activation_dirname,
+    resolve_model,
+)
 from shared_direction import (
     load_all, train_all_directions, train_pooled_direction,
     aggregate_directions, transfer_auroc, cross_transfer_all_layers,
@@ -38,10 +46,10 @@ from sweep_shared_configs import load_validation_diffs, CONFIGS
 LO, HI = 9, 40
 
 TRAIN_VARIATIONS = {
-    "ISS":  ["instructed", "spontaneous", "sycophancy"],
-    "ISSf": ["instructed", "spontaneous", "sycophancy_feedback"],
-    "GSS":  ["game_lie", "spontaneous", "sycophancy"],
-    "GSSf": ["game_lie", "spontaneous", "sycophancy_feedback"],
+    "ISS":  ["instructed_system_prompt", "spontaneous_1", "sycophancy_answer"],
+    "ISSf": ["instructed_system_prompt", "spontaneous_1", "sycophancy_feedback"],
+    "GSS":  ["game_werewolf", "spontaneous_1", "sycophancy_answer"],
+    "GSSf": ["game_werewolf", "spontaneous_1", "sycophancy_feedback"],
 }
 
 
@@ -89,7 +97,7 @@ def plot_layer_sweep(layer_rows, eval_names, cfg_label, out_dir):
         aurocs = [r.get(name, np.nan) for r in layer_rows]
         color = COLORS.get(name, "#333333")
         short = SHORT.get(name, name[:6])
-        is_val = "validation" in name or "control" in name
+        is_val = name in VALIDATION_DATASETS
         ax.plot(layers, aurocs, color=color, linestyle="--" if is_val else "-",
                 marker="o", markersize=2, linewidth=1.2, label=short, alpha=0.85)
 
@@ -130,12 +138,13 @@ def plot_summary_heatmap(summary_rows, dataset_cols, out_path):
     plt.close(fig)
 
 
-def main(data_dir=None, activations_dir=None, output_dir=None):
+def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MODEL_TAG):
     probing_root = Path(__file__).resolve().parents[1]
+    model_tag, _ = resolve_model(model) if model else ("", "")
     if data_dir is None:
         data_dir = str(probing_root)
     if activations_dir is None:
-        activations_dir = str(probing_root / "activations")
+        activations_dir = str(probing_root / activation_dirname(model_tag))
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     if output_dir is None:
@@ -143,8 +152,8 @@ def main(data_dir=None, activations_dir=None, output_dir=None):
     sweep_dir = Path(output_dir) / f"layer_sweep_{ts}"
     sweep_dir.mkdir(parents=True, exist_ok=True)
 
-    all_train_diffs = load_all(data_dir, activations_dir)
-    val_diffs = load_validation_diffs(data_dir, activations_dir)
+    all_train_diffs, model_tag_loaded, _ = load_all(Path(data_dir), Path(activations_dir), model_tag)
+    val_diffs = load_validation_diffs(Path(data_dir), Path(activations_dir), model_tag_loaded or model_tag)
     print(f"train datasets: {sorted(all_train_diffs.keys())}")
     print(f"validation datasets: {sorted(val_diffs.keys())}")
     print(f"configs: {len(CONFIGS)}, variations: {len(TRAIN_VARIATIONS)}")

@@ -37,8 +37,6 @@ def create_agent_run(entry):
 
     if "model_id" in entry:
         metadata["model_id"] = entry["model_id"]
-    if "lora_adapter" in entry:
-        metadata["lora_adapter"] = entry["lora_adapter"]
     if "input_index" in entry:
         metadata["input_index"] = entry["input_index"]
 

@@ -8,8 +8,8 @@ pair diffs with (d,-d) trick; real AUROC uses individual sample activations
 with condition labels.
 
 Usage:
-    python random_baseline.py --model_tag gemma3-27b --probe_path ../../probes/mass_mean/shared_direction_gemma3-27b.pt
-    python random_baseline.py --model_tag gemma3-27b --probe_path ../../probes/contrastive/shared_direction_gemma3-27b.pt --n_random 5000
+    python random_baseline.py --model_tag llama-3-3-70b-instruct --probe_path ../../probes/mass_mean/shared_direction_llama-3-3-70b-instruct.pt
+    python random_baseline.py --model_tag llama-3-3-70b-instruct --probe_path ../../probes/contrastive/shared_direction_llama-3-3-70b-instruct.pt --n_random 5000
 """
 
 import sys
@@ -23,7 +23,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -49,14 +56,17 @@ def auroc_augmented(scores):
     return float(roc_auc_score(labels_all, scores_all))
 
 
-def run(model_tag,
-        probe_path,
+def run(model_tag=DEFAULT_MODEL_TAG,
+        probe_path=None,
         act_dir=None,
         data_dir="../..",
         n_random=1000,
         output_dir="results"):
+    model_tag, _ = resolve_model(model_tag)
+    if probe_path is None:
+        raise ValueError("probe_path is required")
     if act_dir is None:
-        act_dir = f"../../activations_{model_tag}"
+        act_dir = f"../../{activation_dirname(model_tag)}"
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -65,6 +75,10 @@ def run(model_tag,
         best_layer = probe.get("best_layer", probe.get("best_layer_transfer", 1))
         best_idx = best_layer - 1
         trained_dir = probe["all_directions"][best_idx]
+    elif "shared_direction_all" in probe:
+        best_layer = probe.get("best_layer_transfer", 1)
+        best_idx = best_layer - 1
+        trained_dir = probe["shared_direction_all"]
     else:
         trained_dir = probe["direction"]
         best_layer = probe.get("best_layer", 1)
@@ -82,13 +96,19 @@ def run(model_tag,
 
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(act_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             print(f"Skipping {name}: missing files")
             continue
 
         saved = torch.load(act_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(
+            data_dir, filename, saved.get("model_tag", model_tag), saved
+        )
+        if not data_path.exists():
+            print(f"Skipping {name}: missing files")
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, _ = get_pair_diffs(saved["activations"], data, label_map)
         D = pair_diffs[:, best_idx]
         labels = np.array([label_map[s["condition"]] for s in data])

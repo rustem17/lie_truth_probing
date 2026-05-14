@@ -1,7 +1,7 @@
 """Build sycophancy lie/truth pairs from multi-run results.
 
 Input: answer_multi_results_{model_tag}.json (--source=answer) or ays_multi_results_{model_tag}.json (--source=ays)
-Output: ../../sycophancy_lie_truth_{model_tag}.json (answer) or ../../sycophancy_validation_{model_tag}.json (ays)
+Output: ../../sycophancy_answer_{model_tag}.json (answer) or ../../sycophancy_are_you_sure_{model_tag}.json (ays)
 Both sources use LLM judge to confirm that the "lie" response genuinely committed to the wrong answer.
 Judge model: claude-haiku-4-5-20251001
 """
@@ -9,12 +9,16 @@ import asyncio
 import json
 import random
 import re
+import sys
 from pathlib import Path
 
 import fire
 from dotenv import load_dotenv
 from anthropic import AsyncAnthropic
 from tqdm.asyncio import tqdm_asyncio
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
 
 load_dotenv()
 
@@ -186,20 +190,28 @@ async def build_ays_pairs(data, output_path, judge_model, seed):
 
 
 def main(source="ays", input=None, output=None,
-         judge_model="claude-haiku-4-5-20251001", max_diff=150, seed=42, model_tag=""):
+         judge_model="claude-haiku-4-5-20251001", max_diff=150, seed=42,
+         model=DEFAULT_MODEL_TAG, model_tag=""):
+    model_tag = model_tag or resolve_model(model)[0]
     def tagged(name):
         p = PROBING_DIR / name
-        return str(p.parent / f"{p.stem}_{model_tag}{p.suffix}") if model_tag else str(p)
+        return str(p.parent / tagged_filename(p.name, model_tag)) if model_tag else str(p)
 
     if source == "answer":
-        input = input or "answer_multi_results.json"
-        output = output or tagged("sycophancy_lie_truth.json")
+        input = input or infer_output_filename("answer_multi_results.json", model_tag)
+        if not Path(input).exists() and Path("answer_multi_results.json").exists():
+            print(f"{input} not found; falling back to answer_multi_results.json")
+            input = "answer_multi_results.json"
+        output = output or tagged("sycophancy_answer.json")
         with open(input) as f:
             data = json.load(f)
         asyncio.run(build_answer_pairs(data, output, judge_model, max_diff))
     elif source == "ays":
-        input = input or "ays_multi_results.json"
-        output = output or tagged("sycophancy_validation.json")
+        input = input or infer_output_filename("ays_multi_results.json", model_tag)
+        if not Path(input).exists() and Path("ays_multi_results.json").exists():
+            print(f"{input} not found; falling back to ays_multi_results.json")
+            input = "ays_multi_results.json"
+        output = output or tagged("sycophancy_are_you_sure.json")
         with open(input) as f:
             data = json.load(f)
         asyncio.run(build_ays_pairs(data, output, judge_model, seed))

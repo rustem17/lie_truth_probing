@@ -2,6 +2,16 @@
 
 All commands run from the project root (`lie_truth_probing/`). Requires a vLLM server for inference, Anthropic API key for judging, and a GPU for activation extraction and probe-on-model evaluation.
 
+Set up the Python environment with `uv`:
+
+```bash
+uv sync
+uv sync --extra gpu   # optional: install vLLM on the GPU machine
+uv sync --python 3.12 --extra lens   # optional: vLLM-Lens activation capture/steering
+```
+
+Run Python commands through `uv run`, for example `uv run python extract_activations.py`. The command examples below show `python ...` for readability; use `uv run python ...` unless you have already activated `.venv`.
+
 ---
 
 ### Models
@@ -10,22 +20,26 @@ All commands run from the project root (`lie_truth_probing/`). Requires a vLLM s
 
 ```python
 MODEL_REGISTRY = {
-    "gemma3-27b":        "gghfez/gemma-3-27b-novision",
-    "olmo3-32b-instruct": "allenai/Olmo-3.1-32B-Instruct",
-    "olmo3-32b-think":    "allenai/Olmo-3-32B-Think",
-    "olmo3-32b-base":     "allenai/Olmo-3-1125-32B",
+    "llama-3-3-70b-instruct":       "meta-llama/Llama-3.3-70B-Instruct",
+    "gemma-4-31b-it":               "google/gemma-4-31B-it",
+    "olmo-2-0325-32b":              "allenai/OLMo-2-0325-32B",
+    "qwen3-6-35b-a3b":              "Qwen/Qwen3.6-35B-A3B",
+    "glm-5-1":                      "zai-org/GLM-5.1",
+    "trinity-large-thinking":       "arcee-ai/Trinity-Large-Thinking",
+    "minimax-m2-7":                 "MiniMaxAI/MiniMax-M2.7",
+    "kimi-linear-48b-a3b-instruct": "moonshotai/Kimi-Linear-48B-A3B-Instruct",
 }
 ```
 
-Pass the short tag (e.g. `gemma3-27b`) wherever a model argument is accepted. `resolve_model(tag)` maps it to the full HF ID and returns both. The tag propagates through every artifact:
+Pass the short tag (e.g. `llama-3-3-70b-instruct`) wherever a model argument is accepted. `resolve_model(tag)` maps it to the full HF ID and returns both. The default is `llama-3-3-70b-instruct`. The tag propagates through every artifact:
 
 | artifact | naming |
 |---|---|
-| dataset | `instructed_lie_truth_gemma3-27b.json` |
-| activations dir | `activations_gemma3-27b/` |
-| per-dataset probe | `contrastive/instructed_probe_gemma3-27b.pt` |
-| shared direction | `contrastive/shared_direction_gemma3-27b.pt` |
-| multi-run results | `multi_results_gemma3-27b.json` |
+| dataset | `instructed_system_prompt_llama-3-3-70b-instruct.json` |
+| activations dir | `activations_llama-3-3-70b-instruct/` |
+| per-dataset probe | `contrastive/instructed_system_prompt_probe_llama-3-3-70b-instruct.pt` |
+| shared direction | `contrastive/shared_direction_llama-3-3-70b-instruct.pt` |
+| multi-run results | `multi_results_llama-3-3-70b-instruct.json` |
 
 Tags are stored in `.pt` metadata. Eval scripts that accept probe paths auto-resolve the model from that metadata — no need to re-specify the model.
 
@@ -35,24 +49,31 @@ Tags are stored in `.pt` metadata. Eval scripts that accept probe paths auto-res
 
 Each dataset follows `generate.py` → `infer.py` → `build_pairs.py`. The `infer.py` checkpoint (`multi_results_{tag}.json`) is the expensive artifact to preserve.
 
-#### Instructed (lie/truth via system prompt)
+#### Instructed system prompt / user prompt
 
 ```bash
 cd generate_datasets/instructed
 python generate.py                                    # -> probe_dataset.json (1200 samples)
 python generate.py --validation                       # -> probe_dataset_validation.json
 
-python infer.py --model gemma3-27b --n_runs 3         # -> multi_results_gemma3-27b.json
-python build_pairs.py --model_tag gemma3-27b --max_diff 50   # -> ../../instructed_lie_truth_gemma3-27b.json
+python infer.py --n_runs 3                            # -> multi_results_llama-3-3-70b-instruct.json
+python build_pairs.py --max_diff 50                   # -> ../../instructed_system_prompt_llama-3-3-70b-instruct.json
+
+python infer.py --dataset probe_dataset_validation.json --output user_prompt_multi_results_llama-3-3-70b-instruct.json --n_runs 3
+python build_pairs.py --input user_prompt_multi_results_llama-3-3-70b-instruct.json --output ../../instructed_user_prompt_llama-3-3-70b-instruct.json --max_diff 50
 ```
 
-#### Game lie (narrative roleplay framing)
+#### Game lie (Werewolf / Mafia)
 
 ```bash
 cd generate_datasets/game_lie
 python generate.py                                    # -> probe_dataset.json
-python infer.py --model gemma3-27b --n_runs 3         # -> multi_results_gemma3-27b.json
-python build_pairs.py --model_tag gemma3-27b --max_diff 50   # -> ../../game_lie_truth_gemma3-27b.json
+python infer.py --n_runs 3                            # -> multi_results_llama-3-3-70b-instruct.json
+python build_pairs.py --max_diff 50                   # -> ../../game_werewolf_llama-3-3-70b-instruct.json
+
+python generate_mafia.py                              # -> mafia_probe_dataset.json
+python infer.py --dataset mafia_probe_dataset.json --output mafia_multi_results_llama-3-3-70b-instruct.json --n_runs 3
+python build_pairs.py --input mafia_multi_results_llama-3-3-70b-instruct.json --output ../../game_mafia_llama-3-3-70b-instruct.json --max_diff 50
 ```
 
 #### Spontaneous (MMLU-Pro MCQ, natural errors)
@@ -60,11 +81,11 @@ python build_pairs.py --model_tag gemma3-27b --max_diff 50   # -> ../../game_lie
 ```bash
 cd generate_datasets/spontaneous
 python generate.py                                                      # -> spontaneous_matched_dataset.json
-python infer.py --model gemma3-27b --n_runs 10                          # -> multi_results_gemma3-27b.json
+python infer.py --n_runs 10                                             # -> multi_results_llama-3-3-70b-instruct.json
 
-python build_pairs.py --model_tag gemma3-27b --strategy matched --min_correct 7  # -> ../../spontaneous_lie_truth_gemma3-27b.json
-python build_pairs.py --model_tag gemma3-27b --strategy inconsistent             # -> ../../spontaneous_inconsistent_gemma3-27b.json
-python build_pairs.py --model_tag gemma3-27b --strategy validation               # -> ../../spontaneous_validation_gemma3-27b.json + spontaneous_control_gemma3-27b.json
+python build_pairs.py --strategy matched --min_correct 7  # -> ../../spontaneous_1_llama-3-3-70b-instruct.json
+python build_pairs.py --strategy inconsistent             # -> ../../spontaneous_inconsistent_llama-3-3-70b-instruct.json
+python build_pairs.py --strategy validation               # -> ../../spontaneous_2_llama-3-3-70b-instruct.json + spontaneous_control_llama-3-3-70b-instruct.json
 ```
 
 #### Sycophancy (suggestive pressure + "are you sure?" + feedback)
@@ -74,22 +95,22 @@ cd generate_datasets/sycophancy
 python generate.py --mode all   # -> answer_probe_dataset.json + are_you_sure_probe_dataset.json
 
 # single-turn suggestive pressure
-python infer_answer.py --model gemma3-27b --n_runs 10   # -> answer_multi_results_gemma3-27b.json
-python build_pairs.py --source answer --model_tag gemma3-27b    # -> ../../sycophancy_lie_truth_gemma3-27b.json
+python infer_answer.py --n_runs 10   # -> answer_multi_results_llama-3-3-70b-instruct.json
+python build_pairs.py --source answer    # -> ../../sycophancy_answer_llama-3-3-70b-instruct.json
 
 # two-turn "are you sure?"
-python infer_ays.py --model gemma3-27b --n_runs 5               # -> ays_multi_results_gemma3-27b.json
-python build_pairs.py --source ays --model_tag gemma3-27b       # -> ../../sycophancy_validation_gemma3-27b.json
+python infer_ays.py --n_runs 5               # -> ays_multi_results_llama-3-3-70b-instruct.json
+python build_pairs.py --source ays           # -> ../../sycophancy_are_you_sure_llama-3-3-70b-instruct.json
 
 # feedback sycophancy
-python infer_feedback.py --model gemma3-27b --n_runs 10         # -> feedback_multi_results_gemma3-27b.json
-python build_feedback_pairs.py --model_tag gemma3-27b           # -> ../../sycophancy_feedback_gemma3-27b.json
+python infer_feedback.py --n_runs 10         # -> feedback_multi_results_llama-3-3-70b-instruct.json
+python build_feedback_pairs.py               # -> ../../sycophancy_feedback_llama-3-3-70b-instruct.json
 ```
 
 #### Batch inference (all datasets)
 
 ```bash
-bash generate_datasets/run_all_vllm.sh gemma3-27b
+bash generate_datasets/run_all_vllm.sh
 ```
 
 #### Optional: token-length filtering
@@ -104,6 +125,16 @@ python generate_datasets/filter_datasets.py --tolerance 10   # filters all paire
 python generate_datasets/diagnose_confounds.py   # auto-discovers all *_lie_truth*.json in root
 ```
 
+#### Optional: vLLM-Lens
+
+`vllm-lens` is available as the optional `lens` extra. It requires Python 3.12, so install it on the GPU/vLLM host with:
+
+```bash
+uv sync --python 3.12 --extra lens
+```
+
+Use this for a faster experimental activation-extraction path against the vLLM runtime. The existing `extract_activations.py` path remains the reference implementation until the residual-stream tensors from vLLM-Lens are checked against the transformers output on a small dataset.
+
 ---
 
 ### Extract activations
@@ -111,18 +142,16 @@ python generate_datasets/diagnose_confounds.py   # auto-discovers all *_lie_trut
 Requires the model on GPU. Extracts hidden states at all layers for each sample in every train and validation dataset.
 
 ```bash
-python extract_activations.py --model gemma3-27b
+python extract_activations.py
 ```
 
-Output dir is auto-derived: `activations_gemma3-27b/` for the default `first` position, `activations_gemma3-27b_{position}/` for others. Each file: `{name}.pt` containing `activations` (n_samples, n_layers, hidden_dim), `labels`, `label_map`, `model_tag`, `model_id`.
+Output dir is auto-derived: `activations_llama-3-3-70b-instruct/` for the default `first` position, `activations_llama-3-3-70b-instruct_{position}/` for others. Each file: `{name}.pt` containing `activations` (n_samples, n_layers, hidden_dim), `labels`, `label_map`, `model_tag`, `model_id`, `dataset_file`, `dataset_hash`, and `sample_ids`.
 
 Key args:
 
 `--position` — `first` (default), `last`, `first_assistant`, `last_user`, `mean_assistant`, `mid_assistant`, `first_k_assistant`, `last_k_assistant`
 
-`--adapter_id` — optional LoRA adapter (merged before extraction)
-
-`--datasets` — comma-separated subset (e.g. `instructed,spontaneous`); default: all datasets from `config.py`
+`--datasets` — comma-separated subset (e.g. `instructed_system_prompt,spontaneous_1`); default: all datasets from `config.py`
 
 `--max_samples` — cap per dataset
 
@@ -140,9 +169,43 @@ All probe scripts read `model_tag` from the activation `.pt` metadata and propag
 cd probes/mass_mean
 python train.py                                              # -> {name}_probe_{tag}.pt + results_{tag}.json
 python validate.py                                           # -> validation_results_{tag}.json
-python shared_direction.py --datasets instructed,spontaneous,sycophancy   # -> shared_direction_{tag}.pt
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
 python plot.py
 ```
+
+This is the simple difference-in-means direction: for each pair, form
+`d = h_lie - h_truth`, then use `normalize(mean(d))` per layer.
+
+#### Covariance-corrected mass-mean
+
+```bash
+cd probes/mass_mean_iid
+python train.py                                              # -> {name}_probe_{tag}.pt + results_{tag}.json
+python validate.py                                           # -> validation_results_{tag}.json
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
+python plot.py
+```
+
+This keeps the mass-mean feature direction `mean(d)` and also builds an IID
+classification direction `Sigma^-1 mean(d)`, where `Sigma` is the covariance of
+centered pair differences. The default saved scoring direction is the corrected
+`iid` direction. Use `--score_mode feature` to score with the uncorrected
+difference-in-means direction while still saving both.
+
+#### Paired PCA
+
+```bash
+cd probes/paired_pca
+python train.py                                              # -> {name}_probe_{tag}.pt + results_{tag}.json
+python validate.py                                           # -> validation_results_{tag}.json
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
+python plot.py
+```
+
+This forms the same pair-difference matrix `D = h_lie - h_truth` and uses the
+top right singular vector as the probe direction, oriented so that `mean(D)` has
+positive projection. By default the pair differences are not centered; pass
+`--center=True` to run centered PCA.
 
 #### Contrastive (logistic regression on pair diffs)
 
@@ -150,7 +213,7 @@ python plot.py
 cd probes/contrastive
 python train.py                                              # -> {name}_probe_{tag}.pt + results_{tag}.json
 python validate.py                                           # -> validation_results_{tag}.json
-python shared_direction.py --datasets instructed,spontaneous,sycophancy   # -> shared_direction_{tag}.pt
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
 python plot.py
 ```
 
@@ -163,9 +226,9 @@ cd probes/irm
 python train.py   # -> irm_probe_{tag}.pt
 ```
 
-Trains `nn.Linear(hidden_dim, 2)` jointly across environments, all 80 layers vectorized. Default envs: instructed, spontaneous, sycophancy.
+Trains `nn.Linear(hidden_dim, 2)` jointly across environments, all 80 layers vectorized. Default envs: instructed_system_prompt, spontaneous_1, sycophancy_answer.
 
-Key args: `--envs instructed,spontaneous,sycophancy`, `--penalty_mode irm|vrex`, `--lambda_irm 1e3`, `--warmup_steps 100`, `--ramp_steps 100`, `--lr 1e-3`, `--n_epochs 500`
+Key args: `--envs instructed_system_prompt,spontaneous_1,sycophancy_answer`, `--penalty_mode irm|vrex`, `--lambda_irm 1e3`, `--warmup_steps 100`, `--ramp_steps 100`, `--lr 1e-3`, `--n_epochs 500`
 
 IRM sweep: `python probes/irm/sweep.py` → `sweep_results_{ts}.json`; plot: `python probes/irm/plot_sweep_heatmap.py`
 
@@ -175,7 +238,7 @@ IRM sweep: `python probes/irm/sweep.py` → `sweep_results_{ts}.json`; plot: `py
 cd probes/mahalanobis_lda
 python train.py                                        # -> {name}_probe_{tag}.pt + results_{tag}.json
 python validate.py                                     # -> validation_results_{tag}.json
-python shared_direction.py --datasets instructed,spontaneous,sycophancy   # -> shared_direction_{tag}.pt
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
 python plot.py
 ```
 
@@ -201,20 +264,52 @@ probes/analysis/
   run_all.sh               run all analysis plots in one shot
 ```
 
-Run all analysis plots for a method:
+Run all analysis plots for one non-IRM method:
 
 ```bash
 cd probes/contrastive && bash make_plots.sh
-bash make_plots.sh --datasets instructed,sycophancy --layer 33
+bash make_plots.sh --model gemma-4-31b-it --datasets instructed_system_prompt,sycophancy_answer --layer 33
 ```
+
+Run the same analysis plot suite for every non-IRM method with a wrapper:
+
+```bash
+bash probes/make_all_plots.sh
+bash probes/make_all_plots.sh --model gemma-4-31b-it --datasets instructed_system_prompt,sycophancy_answer --layer 33
+```
+
+The wrapper covers `mass_mean`, `mass_mean_iid`, `paired_pca`, `contrastive`,
+and `mahalanobis_lda`. Methods without `shared_direction_{tag}.pt` still run
+their local training/validation plots and skip the shared-direction analysis
+suite instead of failing. IRM keeps its separate sweep heatmap plotter.
+
+Plot scripts require tagged artifacts for the requested model. Legacy untagged
+artifacts are ignored unless you explicitly pass
+`--allow_untagged_fallback=True`; loaded `.pt` artifacts with `model_tag`
+metadata are checked against the requested model. The shell wrappers prefer
+`uv run python` automatically; set `PYTHON=/path/to/python` to override.
 
 Individual scripts:
 
 ```bash
 python probes/analysis/plot_pca.py
-python probes/analysis/plot_pca.py --probes_dir probes/mass_mean --datasets instructed,sycophancy
-python probes/analysis/run_all.sh --datasets instructed,spontaneous,sycophancy
+python probes/analysis/plot_pca.py --probes_dir probes/mass_mean --datasets instructed_system_prompt,sycophancy_answer
+python probes/analysis/run_all.sh --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer
 ```
+
+### Autoprobe Search
+
+`autoprobe/` is an additive research-loop harness for searching probe variants
+against cached feature stores. Smoke mode uses existing residual activations and
+does not regenerate datasets, run vLLM, call judges, or extract activations.
+
+```bash
+uv run python -m autoprobe.run --mode smoke --run-tag smoke1
+```
+
+Autonomous candidates live in `autoprobe/candidates.py`; the fixed evaluator
+keeps the robust-transfer objective stable. See `autoprobe/README.md` and
+`autoprobe/program.md`.
 
 ---
 
@@ -226,16 +321,50 @@ All eval scripts are in `eval/`. Scripts that need a model load it via `ReplaySc
 
 ```bash
 python eval/auroc_eval.py
-python eval/auroc_eval.py --datasets train --activations_dir activations_gemma3-27b
+python eval/auroc_eval.py --datasets train --activations_dir activations_llama-3-3-70b-instruct
 ```
 
-Outputs: CSV + heatmap + layer-sweep plots. Evaluates shared directions, per-scenario directions, residuals, or all.
+Outputs: CSV + heatmap + layer-sweep plots. The CSV includes both preselected-layer AUROC and diagnostic peak AUROC; the heatmap uses the preselected probe layer to avoid optimistic layer selection on the evaluated dataset.
 
 #### Position sweep
 
 ```bash
-python eval/sweep_positions.py   # extracts at all positions, trains mass-mean probes, compares AUROC
+# End-to-end sweep: extract activations at each position, train probes, validate,
+# and write CSV/heatmap summaries under eval/results/<run_name>/
+uv run python eval/sweep_positions.py \
+    --model llama-3-3-70b-instruct \
+    --positions first,last,mean_assistant \
+    --methods mass_mean,mass_mean_iid,paired_pca,contrastive,mahalanobis_lda \
+    --run_name pos_sweep_llama33
+
+# Include all supported positions.
+uv run python eval/sweep_positions.py \
+    --model llama-3-3-70b-instruct \
+    --positions all \
+    --methods mass_mean,mass_mean_iid,paired_pca,contrastive
+
+# Split expensive GPU extraction from offline probe training/validation.
+uv run python eval/sweep_positions.py \
+    --model llama-3-3-70b-instruct \
+    --positions all \
+    --phase extract \
+    --run_name pos_sweep_llama33
+
+uv run python eval/sweep_positions.py \
+    --model llama-3-3-70b-instruct \
+    --positions all \
+    --phase train,validate,summarize \
+    --run_name pos_sweep_llama33
 ```
+
+Supported positions: `first`, `last`, `first_assistant`, `last_user`, `mean_assistant`,
+`mid_assistant`, `first_k_assistant`, `last_k_assistant`.
+
+Supported methods: `mass_mean`, `mass_mean_iid`, `paired_pca`, `contrastive`,
+`mahalanobis_lda`, `irm`.
+Use `--methods all` to run every method. Shared-direction files are optional in
+the sweep; add `--run_shared=True` to include each method's `shared_direction.py`
+step.
 
 #### Config sweep (offline, no GPU)
 
@@ -273,31 +402,38 @@ lie_truth_probing/
 ├── upload_to_docent.py
 ├── PIPELINE.md
 │
-├── *_lie_truth.json                    # base model paired datasets
-├── *_lie_truth_gemma3-27b.json         # per-model tagged paired datasets
-├── *_validation.json, *_control.json   # (same tagging applies)
+├── instructed_system_prompt.json, spontaneous_1.json, ...  # base model paired datasets
+├── *_llama-3-3-70b-instruct.json       # per-model tagged paired datasets
 │
-├── activations_gemma3-27b/             # tagged activations dir
-│   ├── instructed.pt                   # contains model_tag, model_id in metadata
+├── activations_llama-3-3-70b-instruct/      # tagged activations dir
+│   ├── instructed_system_prompt.pt     # contains model_tag, model_id in metadata
 │   └── ...
 │
 ├── probes/
+│   ├── plot_probe_results.py              # shared plot.py helper for non-IRM probe methods
+│   ├── make_all_plots.sh                  # run method-level analysis plots for non-IRM methods
 │   ├── mass_mean/
 │   │   ├── train.py, validate.py, shared_direction.py, plot.py, make_plots.sh
-│   │   ├── {name}_probe_gemma3-27b.pt, shared_direction_gemma3-27b.pt
-│   │   ├── results_gemma3-27b.json, validation_results_gemma3-27b.json
+│   │   ├── {name}_probe_llama-3-3-70b-instruct.pt, shared_direction_llama-3-3-70b-instruct.pt
+│   │   ├── results_llama-3-3-70b-instruct.json, validation_results_llama-3-3-70b-instruct.json
 │   │   └── plots/
+│   ├── mass_mean_iid/
+│   │   ├── train.py, validate.py, shared_direction.py, plot.py, make_plots.sh
+│   │   └── (covariance-corrected mass-mean probes)
+│   ├── paired_pca/
+│   │   ├── train.py, validate.py, shared_direction.py, plot.py, make_plots.sh
+│   │   └── (top-PC directions from pair-difference matrices)
 │   ├── contrastive/
 │   │   └── (same structure)
 │   ├── irm/
 │   │   ├── train.py, validate.py, sweep.py, plot_sweep_heatmap.py
-│   │   ├── irm_probe_gemma3-27b.pt
+│   │   ├── irm_probe_llama-3-3-70b-instruct.pt
 │   │   ├── sweep_results_{ts}.json
 │   │   └── plots/
 │   ├── mahalanobis_lda/
-│   │   ├── train.py, validate.py, shared_direction.py, plot.py
-│   │   ├── {name}_probe_gemma3-27b.pt, shared_direction_gemma3-27b.pt
-│   │   └── results_gemma3-27b.json
+│   │   ├── train.py, validate.py, shared_direction.py, plot.py, make_plots.sh
+│   │   ├── {name}_probe_llama-3-3-70b-instruct.pt, shared_direction_llama-3-3-70b-instruct.pt
+│   │   └── results_llama-3-3-70b-instruct.json
 │   └── analysis/
 │       ├── plot_pca.py, plot_distributions.py, plot_correlation.py
 │       ├── plot_spearman.py, plot_spearman_sweep.py, plot_scatter.py

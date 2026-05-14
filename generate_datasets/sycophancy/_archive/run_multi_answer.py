@@ -1,6 +1,6 @@
 """Multi-run single-turn inference for answer.jsonl sycophancy validation.
 
-Model: meta-llama/Llama-3.1-70B-Instruct via vLLM
+Model: meta-llama/Llama-3.3-70B-Instruct via vLLM
 Dataset: answer_probe_dataset.json (1817 suggestive-pressure prompts)
 n_runs: 10, temperature: 0.6
 """
@@ -83,7 +83,7 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature):
         json.dump(results, f, indent=2)
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
+def main(model="meta-llama/Llama-3.3-70B-Instruct", base_url="http://localhost:8000/v1",
          dataset="answer_probe_dataset.json", output="answer_multi_results.json",
          n_runs=10, temperature=0.6):
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature))

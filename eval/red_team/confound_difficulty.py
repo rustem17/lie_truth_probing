@@ -12,9 +12,9 @@ Prerequisites:
 
 Usage:
     python confound_difficulty.py \
-        --model_tag gemma3-27b \
-        --probe_path ../../probes/mass_mean/shared_direction_gemma3-27b.pt \
-        --multi_results ../../generate_datasets/spontaneous/multi_results_gemma3-27b.json
+        --model_tag llama-3-3-70b-instruct \
+        --probe_path ../../probes/mass_mean/shared_direction_llama-3-3-70b-instruct.pt \
+        --multi_results ../../generate_datasets/spontaneous/multi_results_llama-3-3-70b-instruct.json
 """
 
 import sys
@@ -28,17 +28,29 @@ from scipy.stats import spearmanr
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS, dataset_filename
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
-def run(model_tag,
-        probe_path,
-        multi_results,
+def run(model_tag=DEFAULT_MODEL_TAG,
+        probe_path=None,
+        multi_results=None,
         act_dir=None,
         data_dir="../..",
         output_dir="results"):
+    model_tag, _ = resolve_model(model_tag)
+    if probe_path is None:
+        raise ValueError("probe_path is required")
+    if multi_results is None:
+        raise ValueError("multi_results is required")
     if act_dir is None:
-        act_dir = f"../../activations_{model_tag}"
+        act_dir = f"../../{activation_dirname(model_tag)}"
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -47,6 +59,10 @@ def run(model_tag,
         best_layer = probe.get("best_layer", probe.get("best_layer_transfer", 1))
         best_idx = best_layer - 1
         direction = probe["all_directions"][best_idx]
+    elif "shared_direction_all" in probe:
+        best_layer = probe.get("best_layer_transfer", 1)
+        best_idx = best_layer - 1
+        direction = probe["shared_direction_all"]
     else:
         direction = probe["direction"]
         best_layer = probe.get("best_layer", 1)
@@ -62,21 +78,24 @@ def run(model_tag,
         difficulty_map[sid] = n_correct / n_runs
 
     results_all = []
-    for ds_key in ["spontaneous", "spontaneous_inconsistent"]:
+    for ds_key in ["spontaneous_1", "spontaneous_inconsistent"]:
         if ds_key not in TRAIN_DATASETS:
             continue
         filename, label_map = TRAIN_DATASETS[ds_key]
         act_path = Path(act_dir) / f"{ds_key}.pt"
-        fname = dataset_filename(filename, model_tag) if model_tag else filename
-        data_path = Path(data_dir) / fname
-        if not data_path.exists():
-            data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             print(f"Skipping {ds_key}: missing files")
             continue
 
         saved = torch.load(act_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(
+            data_dir, filename, saved.get("model_tag", model_tag), saved
+        )
+        if not data_path.exists():
+            print(f"Skipping {ds_key}: missing files")
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, ds_key)
         activations = saved["activations"]
 
         scores = activations[:, best_idx] @ direction

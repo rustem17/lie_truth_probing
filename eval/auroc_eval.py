@@ -1,10 +1,10 @@
 """
 Unified AUROC evaluation for lie/truth probes on precomputed activations.
 
-Probes: shared_direction.pt (contrastive, mass_mean) + irm_probe.pt (auto-discovered)
-Activations: activations/{name}.pt (n_samples, n_layers, hidden_dim)
+Probes: shared_direction_{model_tag}.pt (contrastive, mass_mean) + irm_probe_{model_tag}.pt (auto-discovered)
+Activations: activations_{model_tag}/{name}.pt (n_samples, n_layers, hidden_dim)
 Directions: shared, per_scenario, residuals, or all
-Output: CSV + heatmap + layer-sweep plots
+Output: CSV + fixed-layer heatmap + diagnostic layer-sweep plots
 """
 import sys
 from datetime import datetime
@@ -21,7 +21,16 @@ import torch
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent))
-from config import ALL_DATASETS, ACTIVATIONS_DIR, COLORS, SHORT, TRAIN_DATASETS, VALIDATION_DATASETS
+from config import (
+    ALL_DATASETS,
+    COLORS,
+    DEFAULT_MODEL_TAG,
+    SHORT,
+    TRAIN_DATASETS,
+    VALIDATION_DATASETS,
+    activation_dirname,
+    resolve_model,
+)
 from probe_utils import default_irm_path, default_probe_paths, find_peak_auroc, load_directions
 
 
@@ -38,8 +47,8 @@ def resolve_datasets(datasets, activations_dir):
 
 
 def plot_heatmap(df, dataset_names, direction_names, out_dir, timestamp):
-    pivot = df.pivot(index="direction", columns="dataset", values="auroc")
-    pivot_layers = df.pivot(index="direction", columns="dataset", values="peak_layer")
+    pivot = df.pivot(index="direction", columns="dataset", values="fixed_auroc")
+    pivot_layers = df.pivot(index="direction", columns="dataset", values="fixed_layer")
 
     col_order = [d for d in dataset_names if d in pivot.columns]
     row_order = [d for d in direction_names if d in pivot.index]
@@ -60,7 +69,7 @@ def plot_heatmap(df, dataset_names, direction_names, out_dir, timestamp):
     fig, ax = plt.subplots(figsize=(max(8, len(col_order) * 1.2), max(5, len(row_order) * 0.6)))
     sns.heatmap(pivot.astype(float), annot=annot, fmt="", cmap="RdYlGn", vmin=0.4, vmax=1.0,
                 linewidths=0.5, ax=ax, xticklabels=col_labels, cbar_kws={"label": "AUROC"})
-    ax.set_title("AUROC (lie vs truth) at peak layer")
+    ax.set_title("AUROC (lie vs truth) at preselected probe layer")
     ax.set_xlabel("")
     ax.set_ylabel("")
     plt.tight_layout()
@@ -83,7 +92,7 @@ def plot_sweep(all_aurocs, dataset_names, direction_names, out_dir, timestamp):
             layers = np.arange(1, n_layers + 1)
             color = COLORS.get(ds_name, "#333333")
             short = SHORT.get(ds_name, ds_name)
-            is_val = "validation" in ds_name or "control" in ds_name
+            is_val = ds_name in VALIDATION_DATASETS
             peak_idx = int(np.nanargmax(aurocs))
             ax.plot(layers, aurocs, color=color, linestyle="--" if is_val else "-",
                     marker="o", markersize=2, linewidth=1,
@@ -109,18 +118,20 @@ def main(
     directions="all",
     plot_type="all",
     output_dir="results",
+    model=DEFAULT_MODEL_TAG,
 ):
+    model_tag, _ = resolve_model(model) if model else ("", "")
     if not activations_dir:
-        activations_dir = ACTIVATIONS_DIR
+        activations_dir = Path(__file__).resolve().parent.parent / activation_dirname(model_tag)
     activations_dir = Path(activations_dir)
 
     if not probe_paths:
-        probe_paths = default_probe_paths()
+        probe_paths = default_probe_paths(model_tag)
     elif isinstance(probe_paths, str):
         probe_paths = [p.strip() for p in probe_paths.split(",")]
 
     if irm_path == "auto":
-        irm_path = default_irm_path()
+        irm_path = default_irm_path(model_tag)
 
     dataset_names = resolve_datasets(datasets, activations_dir)
 
@@ -128,7 +139,8 @@ def main(
     print(f"Datasets: {dataset_names}")
     print(f"Directions: {directions}")
 
-    all_directions = load_directions(probe_paths, irm_path, directions=directions)
+    all_directions, direction_meta = load_directions(
+        probe_paths, irm_path, directions=directions, return_metadata=True)
     direction_names = list(all_directions.keys())
 
     if not direction_names:
@@ -147,8 +159,22 @@ def main(
         print(f"  {ds_name}: {act.shape[0]} samples")
         for dir_name, dir_stack in all_directions.items():
             peak_auroc, peak_layer, aurocs = find_peak_auroc(act, labels, dir_stack)
-            rows.append({"direction": dir_name, "dataset": ds_name,
-                         "auroc": peak_auroc, "peak_layer": peak_layer + 1})
+            fixed_layer = direction_meta.get(dir_name, {}).get("fixed_layer")
+            if fixed_layer is None or fixed_layer >= len(aurocs):
+                fixed_layer = peak_layer
+                selection = "peak_fallback"
+            else:
+                selection = "probe_metadata"
+            fixed_auroc = aurocs[fixed_layer]
+            rows.append({
+                "direction": dir_name,
+                "dataset": ds_name,
+                "fixed_auroc": fixed_auroc,
+                "fixed_layer": fixed_layer + 1,
+                "peak_auroc": peak_auroc,
+                "peak_layer": peak_layer + 1,
+                "selection": selection,
+            })
             all_aurocs[(dir_name, ds_name)] = aurocs
 
     df = pd.DataFrame(rows)

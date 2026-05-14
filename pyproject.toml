@@ -1,0 +1,55 @@
+[project]
+name = "lie-truth-probing"
+version = "0.1.0"
+description = "Dataset generation, activation extraction, probing, and evaluation for lie/truth behavior in LLMs."
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "accelerate>=1.1",
+    "anthropic>=0.49",
+    "beautifulsoup4>=4.12",
+    "datasets>=3.0",
+    "fire>=0.7",
+    "google-generativeai>=0.8",
+    "lxml>=4.9",
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "openai>=1.70",
+    "pandas>=2.2",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "scikit-learn>=1.4",
+    "scipy>=1.12",
+    "seaborn>=0.13",
+    "sentencepiece>=0.2",
+    "torch>=2.6",
+    "tqdm>=4.66",
+    "together>=1.2",
+    "transformers>=4.50",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "vllm>=0.8",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+lens = [
+    "vllm-lens>=1.1.0 ; python_full_version >= '3.12'",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

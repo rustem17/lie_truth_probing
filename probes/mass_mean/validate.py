@@ -5,9 +5,9 @@ Loads pre-extracted activations and pre-trained probe directions,
 computes AUROC via dot product scoring.
 
 Mapping:
-  instructed -> instructed_validation
-  spontaneous -> spontaneous_validation, spontaneous_control
-  sycophancy -> sycophancy_validation
+  instructed_system_prompt -> instructed_user_prompt
+  spontaneous_1 -> spontaneous_2, spontaneous_control
+  sycophancy_answer -> sycophancy_are_you_sure
 
 Input: probes/mass_mean/{name}_probe.pt + activations/{val_name}.pt
 Output: probes/mass_mean/validation_results.json
@@ -22,7 +22,15 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import VALIDATION_MAP
+from config import (
+    DEFAULT_MODEL_TAG,
+    VALIDATION_MAP,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    tagged_filename,
+    validate_dataset_provenance,
+)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -42,12 +50,21 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def validate(data_dir="../..", activations_dir="../../activations", probes_dir="."):
+def validate(data_dir="../..", activations_dir=None, probes_dir=".", model=DEFAULT_MODEL_TAG):
     results = {}
-    model_tag = ""
+    cli_model_tag, _ = resolve_model(model) if model else ("", "")
+    if activations_dir is None:
+        activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
+    activations_dir = Path(activations_dir)
+    data_dir = Path(data_dir)
+    probes_dir = Path(probes_dir)
+
+    model_tag = cli_model_tag
 
     for probe_name, val_sets in VALIDATION_MAP.items():
-        probe_path = Path(probes_dir) / f"{probe_name}_probe.pt"
+        probe_path = probes_dir / tagged_filename(f"{probe_name}_probe.pt", cli_model_tag)
+        if not probe_path.exists():
+            probe_path = probes_dir / f"{probe_name}_probe.pt"
         if not probe_path.exists():
             print(f"Skipping {probe_name}: {probe_path} not found")
             continue
@@ -61,14 +78,18 @@ def validate(data_dir="../..", activations_dir="../../activations", probes_dir="
         print(f"\n{probe_name} probe (best layer {best_layer}):")
 
         for val_name, val_file, label_map in val_sets:
-            act_path = Path(activations_dir) / f"{val_name}.pt"
-            data_path = Path(data_dir) / val_file
-            if not act_path.exists() or not data_path.exists():
+            act_path = activations_dir / f"{val_name}.pt"
+            if not act_path.exists():
                 print(f"  {val_name}: missing files, skipping")
                 continue
 
             saved = torch.load(act_path, weights_only=False)
+            data_path = resolve_dataset_path_for_activation(data_dir, val_file, saved.get("model_tag", model_tag), saved)
+            if not data_path.exists():
+                print(f"  {val_name}: missing dataset {data_path}, skipping")
+                continue
             data = json.load(open(data_path))[:len(saved["activations"])]
+            validate_dataset_provenance(saved, data, val_name)
             pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
             n_pairs = len(pair_ids)
 

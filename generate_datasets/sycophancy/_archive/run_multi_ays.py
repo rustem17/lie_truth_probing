@@ -84,7 +84,7 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature):
         json.dump(output_data, f, indent=2)
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
+def main(model="meta-llama/Llama-3.3-70B-Instruct", base_url="http://localhost:8000/v1",
          dataset="are_you_sure_probe_dataset.json", output="ays_multi_results.json",
          n_runs=5, temperature=0.6):
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature))

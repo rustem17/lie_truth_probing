@@ -7,11 +7,11 @@ from sklearn.metrics import roc_auc_score
 PROBES_ROOT = Path(__file__).resolve().parent.parent / "probes"
 
 COND_TO_RES = {
-    "instructed": "compliance_res",
-    "spontaneous": "spontaneous_res",
-    "sycophancy": "sycophancy_res",
+    "instructed_system_prompt": "instructed_system_prompt_res",
+    "spontaneous_1": "spontaneous_1_res",
+    "sycophancy_answer": "sycophancy_answer_res",
     "sycophancy_feedback": "sycophancy_fb_res",
-    "game_lie": "game_res",
+    "game_werewolf": "game_werewolf_res",
 }
 
 
@@ -41,11 +41,12 @@ def find_peak_auroc(activations, labels, direction_stack):
     return aurocs[peak_layer], int(peak_layer), aurocs
 
 
-def load_directions(probe_paths, irm_path=None, directions="all"):
+def load_directions(probe_paths, irm_path=None, directions="all", return_metadata=False):
     if isinstance(probe_paths, str):
         probe_paths = [p.strip() for p in probe_paths.split(",")]
 
     result = {}
+    metadata = {}
 
     for p in probe_paths:
         pp = Path(p)
@@ -60,21 +61,28 @@ def load_directions(probe_paths, irm_path=None, directions="all"):
         n_layers = len(all_dirs)
 
         shared_arr = np.stack([normalize(np.asarray(all_dirs[l])) for l in range(n_layers)])
+        fixed_layer = sd.get("best_layer_transfer", sd.get("best_layer"))
+        fixed_layer = fixed_layer - 1 if fixed_layer is not None else None
 
         if directions in ("all", "shared"):
             result[f"{label}/shared"] = shared_arr
+            metadata[f"{label}/shared"] = {"fixed_layer": fixed_layer}
 
         if directions in ("all", "per_scenario"):
             for cond_name, cond_dirs in per_layer.items():
-                result[f"{label}/{cond_name}"] = np.stack([
+                name = f"{label}/{cond_name}"
+                result[name] = np.stack([
                     normalize(np.asarray(cond_dirs[l])) for l in range(n_layers)])
+                metadata[name] = {"fixed_layer": fixed_layer}
 
         if directions in ("all", "residuals"):
             for cond, res_name in COND_TO_RES.items():
                 if cond in per_layer:
-                    result[f"{label}/{res_name}"] = np.stack([
+                    name = f"{label}/{res_name}"
+                    result[name] = np.stack([
                         residual(np.asarray(per_layer[cond][l]), shared_arr[l])
                         for l in range(n_layers)])
+                    metadata[name] = {"fixed_layer": fixed_layer}
 
     if irm_path:
         irm_pp = Path(irm_path)
@@ -85,15 +93,21 @@ def load_directions(probe_paths, irm_path=None, directions="all"):
                 n_layers = len(irm_all)
                 result["irm/shared"] = np.stack([
                     normalize(np.asarray(irm_all[l])) for l in range(n_layers)])
+                fixed_layer = irm_data.get("best_layer")
+                metadata["irm/shared"] = {
+                    "fixed_layer": fixed_layer - 1 if fixed_layer is not None else None
+                }
 
     for k, v in result.items():
         print(f"  {k}: {v.shape}")
+    if return_metadata:
+        return result, metadata
     return result
 
 
 def default_probe_paths(model_tag=None):
     candidates = []
-    for method in ["contrastive", "mass_mean"]:
+    for method in ["contrastive", "mass_mean", "mass_mean_iid", "paired_pca"]:
         if model_tag:
             p = PROBES_ROOT / method / f"shared_direction_{model_tag}.pt"
             if p.exists():

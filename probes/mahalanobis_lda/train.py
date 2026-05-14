@@ -23,7 +23,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -59,24 +66,34 @@ def fisher_lda(D, ridge=1e-4):
     return w
 
 
-def train(data_dir="../..", activations_dir="../../activations", output_dir=".", n_splits=5, ridge=1e-4):
+def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ridge=1e-4, model=DEFAULT_MODEL_TAG):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
+    cli_model_tag, _ = resolve_model(model) if model else ("", "")
+    if activations_dir is None:
+        activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
+    activations_dir = Path(activations_dir)
+    data_dir = Path(data_dir)
+
     model_tag = ""
     model_id = ""
 
     for name, (filename, label_map) in TRAIN_DATASETS.items():
-        act_path = Path(activations_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        act_path = activations_dir / f"{name}.pt"
+        if not act_path.exists():
             print(f"Skipping {name}: missing files")
             continue
 
         saved = torch.load(act_path, weights_only=False)
         if not model_tag:
-            model_tag = saved.get("model_tag", "")
+            model_tag = saved.get("model_tag", cli_model_tag)
             model_id = saved.get("model_id", "")
+        data_path = resolve_dataset_path_for_activation(data_dir, filename, saved.get("model_tag", cli_model_tag), saved)
+        if not data_path.exists():
+            print(f"Skipping {name}: missing dataset {data_path}")
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         n_pairs, n_layers, hidden_dim = pair_diffs.shape
 

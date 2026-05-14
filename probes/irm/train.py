@@ -1,7 +1,7 @@
 """
 Invariant linear probe (IRMv1 or V-REx) across multiple environments (deception conditions).
 
-Environments: subsets of TRAIN_DATASETS (default: instructed, spontaneous, sycophancy)
+Environments: subsets of TRAIN_DATASETS (default: instructed_system_prompt, spontaneous_1, sycophancy_answer)
 Input: activations/{name}.pt + paired dataset JSONs
 Probe: nn.Linear(hidden_dim, 2), no bias
 Penalty modes:
@@ -25,7 +25,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -47,7 +54,7 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def load_envs(env_names, data_dir, activations_dir, max_samples=None):
+def load_envs(env_names, data_dir, activations_dir, cli_model_tag="", max_samples=None):
     envs = {}
     model_tag = ""
     model_id = ""
@@ -55,9 +62,11 @@ def load_envs(env_names, data_dir, activations_dir, max_samples=None):
         filename, label_map = TRAIN_DATASETS[name]
         saved = torch.load(Path(activations_dir) / f"{name}.pt", weights_only=False)
         if not model_tag:
-            model_tag = saved.get("model_tag", "")
+            model_tag = saved.get("model_tag", cli_model_tag)
             model_id = saved.get("model_id", "")
-        data = json.load(open(Path(data_dir) / filename))[:len(saved["activations"])]
+        data_path = resolve_dataset_path_for_activation(data_dir, filename, saved.get("model_tag", cli_model_tag), saved)
+        data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         if max_samples:
             data = data[:max_samples]
             saved["activations"] = saved["activations"][:max_samples]
@@ -147,12 +156,15 @@ def eval_auroc(direction, env_diffs_layer):
     return float(np.mean(aucs)), aucs
 
 
-def train(envs="instructed,spontaneous,sycophancy", data_dir="../..", activations_dir="../../activations",
+def train(envs="instructed_system_prompt,spontaneous_1,sycophancy_answer", data_dir="../..", activations_dir=None,
           output_dir=".", n_epochs=500, lr=1e-3, lambda_irm=1e3, warmup_steps=100, ramp_steps=100,
-          max_samples=None, penalty="irm", weight_decay=0.0):
+          max_samples=None, penalty="irm", weight_decay=0.0, model=DEFAULT_MODEL_TAG):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     env_names = [e.strip() for e in envs.split(",")] if isinstance(envs, str) else list(envs)
-    env_data, model_tag, model_id = load_envs(env_names, data_dir, activations_dir, max_samples)
+    cli_model_tag, _ = resolve_model(model) if model else ("", "")
+    if activations_dir is None:
+        activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
+    env_data, model_tag, model_id = load_envs(env_names, Path(data_dir), Path(activations_dir), cli_model_tag, max_samples)
 
     n_layers = next(iter(env_data.values()))["D"].shape[1]
     hidden_dim = next(iter(env_data.values()))["D"].shape[2]

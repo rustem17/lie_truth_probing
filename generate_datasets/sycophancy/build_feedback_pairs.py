@@ -7,12 +7,16 @@ Judge model: claude-haiku-4-5-20251001
 """
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import fire
 from dotenv import load_dotenv
 from anthropic import AsyncAnthropic
 from tqdm.asyncio import tqdm_asyncio
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
 
 load_dotenv()
 
@@ -127,10 +131,16 @@ async def build_pairs(data, output_path, judge_model, max_diff):
 
 
 def main(input="feedback_multi_results.json",
-         output=None, judge_model="claude-haiku-4-5-20251001", max_diff=150, model_tag=""):
+         output=None, judge_model="claude-haiku-4-5-20251001", max_diff=150,
+         model=DEFAULT_MODEL_TAG, model_tag=""):
+    model_tag = model_tag or resolve_model(model)[0]
+    if input == "feedback_multi_results.json":
+        tagged_input = infer_output_filename("feedback_multi_results.json", model_tag)
+        if Path(tagged_input).exists():
+            input = tagged_input
     if not output:
         p = PROBING_DIR / "sycophancy_feedback.json"
-        output = str(p.parent / f"{p.stem}_{model_tag}{p.suffix}") if model_tag else str(p)
+        output = str(p.parent / tagged_filename(p.name, model_tag)) if model_tag else str(p)
     with open(input) as f:
         data = json.load(f)
     asyncio.run(build_pairs(data, output, judge_model, max_diff))

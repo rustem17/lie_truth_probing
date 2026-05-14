@@ -11,7 +11,7 @@ Position: last (final token), all (per-token mean), assistant (assistant tokens 
 
 Usage:
     python probe_apollo.py \
-        --probe_paths contrastive/shared_direction.pt,mass_mean/shared_direction.pt \
+        --probe_paths contrastive/shared_direction_llama-3-3-70b-instruct.pt,mass_mean/shared_direction_llama-3-3-70b-instruct.pt \
         --apollo_dir /path/to/black_to_white_boosts/results \
         --datasets ai_liar,sandbagging_wmdp_mmlu
 
@@ -19,8 +19,12 @@ Requires: CUDA GPU
 """
 import json
 import torch
+import sys
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from config import DEFAULT_MODEL_TAG
 
 assert torch.cuda.is_available(), "This script requires a CUDA GPU. Do not run locally."
 
@@ -49,6 +53,10 @@ def load_apollo_dataset(jsonl_path):
 
 
 COLORS = ["#729ECE", "#D68F73", "#97C484", "#C5A3CF", "#F2C45F", "#E07B7B", "#8CC5D0", "#B5B5B5"]
+DEFAULT_PROBE_PATHS = (
+    f"contrastive/shared_direction_{DEFAULT_MODEL_TAG}.pt,"
+    f"mass_mean/shared_direction_{DEFAULT_MODEL_TAG}.pt"
+)
 
 
 def plot_sweep_apollo(all_results, probe_names, position, output_dir):
@@ -85,8 +93,7 @@ def plot_sweep_apollo(all_results, probe_names, position, output_dir):
 
 def main(
     model=None,
-    adapter_id=None,
-    probe_paths="contrastive/shared_direction.pt",
+    probe_paths=DEFAULT_PROBE_PATHS,
     apollo_dir=".",
     datasets=None,
     position="last",
@@ -112,7 +119,7 @@ def main(
         return
 
     probes, model_tag = load_probes_sweep(probe_paths) if layer == "all" else load_probes(probe_paths, layer_override=layer)
-    scorer = ReplayScorer(model, adapter_id=adapter_id, probes=probes, model_tag=model_tag)
+    scorer = ReplayScorer(model, probes=probes, model_tag=model_tag)
     probe_names = [p[0] for p in probes]
 
     all_results = {}

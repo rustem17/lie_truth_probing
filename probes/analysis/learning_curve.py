@@ -1,11 +1,11 @@
 """
 Probe learning curves: AUROC vs number of training pairs.
 
-Model: meta-llama/Llama-3.1-70B-Instruct (activations from last token position)
-Datasets: instructed, spontaneous, sycophancy paired lie/truth activations
+Model: default config model (activations from last token position)
+Datasets: instructed_system_prompt, spontaneous_1, sycophancy_answer paired lie/truth activations
 Probe: LogisticRegression(max_iter=1000, fit_intercept=False) on augmented pair diffs
 Layer: best_layer_transfer from shared_direction.pt (1-indexed)
-Validation: external paired sets (instructed_validation.json, spontaneous_validation.json, sycophancy_validation.json)
+Validation: external paired sets (instructed_user_prompt.json, spontaneous_2.json, sycophancy_are_you_sure.json)
 Metric: AUROC on augmented pair diffs (train, CV, external validation)
 Params: n_repeats=20, n_splits=5 (CV folds), sample sizes via geomspace(5, n_pairs, 15)
 """
@@ -24,11 +24,24 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS as _ALL_TRAIN, VALIDATION_MAP as _FULL_VAL_MAP, COLORS, PROBING_ROOT, ACTIVATIONS_DIR, DATA_DIR
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS as _ALL_TRAIN,
+    VALIDATION_MAP as _FULL_VAL_MAP,
+    COLORS,
+    PROBING_ROOT,
+    DATA_DIR,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
+from artifact_utils import load_shared_direction  # noqa: E402
 
 sns.set_theme(style="whitegrid")
 
-_LC_NAMES = {"instructed", "spontaneous", "sycophancy"}
+_LC_NAMES = {"instructed_system_prompt", "spontaneous_1", "sycophancy_answer"}
 TRAIN_DATASETS = {k: v for k, v in _ALL_TRAIN.items() if k in _LC_NAMES}
 VALIDATION_MAP = {k: v[0] for k, v in _FULL_VAL_MAP.items() if k in _LC_NAMES}
 
@@ -113,14 +126,16 @@ def run_learning_curve(D_train, D_val, sample_sizes, n_repeats, n_splits):
 
 
 def main(activations_dir=None, probes_dir=None, data_dir=None,
-         output_dir=None, n_repeats=20, n_splits=5):
-    activations_dir = Path(activations_dir) if activations_dir else ACTIVATIONS_DIR
+         output_dir=None, n_repeats=20, n_splits=5, model=DEFAULT_MODEL_TAG,
+         allow_untagged_fallback=False):
+    model_tag, _ = resolve_model(model) if model else ("", "")
+    activations_dir = Path(activations_dir) if activations_dir else PROBING_ROOT / activation_dirname(model_tag)
     probes_dir = Path(probes_dir) if probes_dir else PROBING_ROOT / "probes" / "contrastive"
     data_dir = Path(data_dir) if data_dir else DATA_DIR
     output_dir = Path(output_dir) if output_dir else probes_dir / "plots"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    shared = torch.load(probes_dir / "shared_direction.pt", weights_only=False)
+    shared, _ = load_shared_direction(probes_dir, model_tag, allow_untagged_fallback)
     best_layer = shared["best_layer_transfer"]
     layer_idx = best_layer - 1
 
@@ -130,13 +145,19 @@ def main(activations_dir=None, probes_dir=None, data_dir=None,
 
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         act_path = Path(activations_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             print(f"skipping {name}: missing files")
             continue
 
         saved = torch.load(act_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(
+            data_dir, filename, saved.get("model_tag", model_tag), saved
+        )
+        if not data_path.exists():
+            print(f"skipping {name}: missing files")
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, pair_ids = get_pair_diffs(saved["activations"], data, label_map)
         D_train = pair_diffs[:, layer_idx]
         n_pairs = len(pair_ids)
@@ -147,10 +168,15 @@ def main(activations_dir=None, probes_dir=None, data_dir=None,
         if name in VALIDATION_MAP:
             val_name, val_file, val_label_map = VALIDATION_MAP[name]
             val_act_path = Path(activations_dir) / f"{val_name}.pt"
-            val_data_path = Path(data_dir) / val_file
-            if val_act_path.exists() and val_data_path.exists():
+            if val_act_path.exists():
                 val_saved = torch.load(val_act_path, weights_only=False)
+                val_data_path = resolve_dataset_path_for_activation(
+                    data_dir, val_file, val_saved.get("model_tag", model_tag), val_saved
+                )
+                if not val_data_path.exists():
+                    continue
                 val_data = json.load(open(val_data_path))[:len(val_saved["activations"])]
+                validate_dataset_provenance(val_saved, val_data, val_name)
                 val_pair_diffs, val_pair_ids = get_pair_diffs(val_saved["activations"], val_data, val_label_map)
                 D_val = val_pair_diffs[:, layer_idx]
                 val_n_pairs = len(val_pair_ids)

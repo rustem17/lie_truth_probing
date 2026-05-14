@@ -83,7 +83,7 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature):
     print(f"\n{len(results)} samples, {consistent} consistent ({100*consistent/len(results):.1f}%) -> {output}")
 
 
-def main(model="meta-llama/Llama-3.1-70B-Instruct", base_url="http://localhost:8000/v1",
+def main(model="meta-llama/Llama-3.3-70B-Instruct", base_url="http://localhost:8000/v1",
          dataset="spontaneous_matched_dataset.json", output="spontaneous_multi_results.json",
          n_runs=3, temperature=0.6):
     asyncio.run(run(model, base_url, dataset, output, n_runs, temperature))

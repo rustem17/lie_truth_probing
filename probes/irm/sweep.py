@@ -3,7 +3,7 @@ Sweep IRM/V-REx hyperparameters across environment combinations.
 
 Model: n/a (offline, cached activations)
 Data: activations/*.pt + paired JSONs from src/probing/
-Env combos: {game_lie,spontaneous,sycophancy}, {spontaneous,sycophancy}
+Env combos: {game_werewolf,spontaneous_1,sycophancy_answer}, {spontaneous_1,sycophancy_answer}
 Grid: penalty(irm,vrex) x lambda(1e1..1e4) x lr(1e-4,1e-3) x epochs(500,1000) x warmup(100,250) x wd(0,1e-4)
 Metric: held-out mean AUROC (train datasets not in envs + all validation datasets)
 Output: probes/irm/sweep_results_YYYYMMDD_HHMMSS.json
@@ -20,14 +20,22 @@ import torch
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS, VALIDATION_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    VALIDATION_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 from train import load_envs, train_all_layers, eval_auroc, get_pair_diffs
 
 
 ENV_COMBOS = {
-    "GSS": ["game_lie", "spontaneous", "sycophancy"],
-    "SS": ["spontaneous", "sycophancy"],
+    "GSS": ["game_werewolf", "spontaneous_1", "sycophancy_answer"],
+    "SS": ["spontaneous_1", "sycophancy_answer"],
 }
 
 GRID = {
@@ -40,7 +48,7 @@ GRID = {
 }
 
 
-def load_heldout(env_names, data_dir, activations_dir):
+def load_heldout(env_names, data_dir, activations_dir, model_tag=""):
     heldout_specs = {}
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         if name not in env_names:
@@ -51,11 +59,14 @@ def load_heldout(env_names, data_dir, activations_dir):
     heldout = {}
     for name, (filename, label_map) in heldout_specs.items():
         act_path = Path(activations_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
-        if not act_path.exists() or not data_path.exists():
+        if not act_path.exists():
             continue
         saved = torch.load(act_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(data_dir, filename, saved.get("model_tag", model_tag), saved)
+        if not data_path.exists():
+            continue
         data = json.load(open(data_path))[:len(saved["activations"])]
+        validate_dataset_provenance(saved, data, name)
         pair_diffs, _ = get_pair_diffs(saved["activations"], data, label_map)
         heldout[name] = pair_diffs
     return heldout
@@ -72,8 +83,11 @@ def eval_heldout_at_layer(direction, layer_idx, heldout):
     return results
 
 
-def sweep(data_dir="../..", activations_dir="../../activations", output_dir=".",
-          layer_min=10, layer_max=50):
+def sweep(data_dir="../..", activations_dir=None, output_dir=".",
+          layer_min=10, layer_max=50, model=DEFAULT_MODEL_TAG):
+    model_tag, _ = resolve_model(model) if model else ("", "")
+    if activations_dir is None:
+        activations_dir = Path(data_dir) / activation_dirname(model_tag)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     keys = list(GRID.keys())
     values = [GRID[k] for k in keys]
@@ -86,8 +100,8 @@ def sweep(data_dir="../..", activations_dir="../../activations", output_dir=".",
     for combo_name, env_names in ENV_COMBOS.items():
         print(f"\n{'='*60}")
         print(f"env combo: {combo_name} = {env_names}")
-        env_data = load_envs(env_names, data_dir, activations_dir)
-        heldout = load_heldout(env_names, data_dir, activations_dir)
+        env_data, model_tag_loaded, _ = load_envs(env_names, Path(data_dir), Path(activations_dir), model_tag)
+        heldout = load_heldout(env_names, Path(data_dir), Path(activations_dir), model_tag_loaded or model_tag)
         n_layers = next(iter(env_data.values()))["D"].shape[1]
         hidden_dim = next(iter(env_data.values()))["D"].shape[2]
         layer_lo = max(layer_min - 1, 0)

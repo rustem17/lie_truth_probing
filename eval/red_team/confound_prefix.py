@@ -14,8 +14,8 @@ Prerequisites:
     python extract_activations.py --model <tag>  # default position (first)
 
 Usage:
-    python confound_prefix.py --model_tag gemma3-27b
-    python confound_prefix.py --model_tag gemma3-27b --prefix_act_dir ../../activations_gemma3-27b_last_user --response_act_dir ../../activations_gemma3-27b
+    python confound_prefix.py --model_tag llama-3-3-70b-instruct
+    python confound_prefix.py --model_tag llama-3-3-70b-instruct --prefix_act_dir ../../activations_llama-3-3-70b-instruct_last_user --response_act_dir ../../activations_llama-3-3-70b-instruct
 """
 
 import sys
@@ -29,7 +29,14 @@ from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from config import TRAIN_DATASETS
+from config import (
+    DEFAULT_MODEL_TAG,
+    TRAIN_DATASETS,
+    activation_dirname,
+    resolve_dataset_path_for_activation,
+    resolve_model,
+    validate_dataset_provenance,
+)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -54,15 +61,16 @@ def sample_auroc(activations_layer, labels, pair_diffs_layer):
     return float(roc_auc_score(labels, activations_layer @ direction))
 
 
-def run(model_tag,
+def run(model_tag=DEFAULT_MODEL_TAG,
         prefix_act_dir=None,
         response_act_dir=None,
         data_dir="../..",
         output_dir="results"):
+    model_tag, _ = resolve_model(model_tag)
     if prefix_act_dir is None:
-        prefix_act_dir = f"../../activations_{model_tag}_last_user"
+        prefix_act_dir = f"../../{activation_dirname(model_tag, 'last_user')}"
     if response_act_dir is None:
-        response_act_dir = f"../../activations_{model_tag}"
+        response_act_dir = f"../../{activation_dirname(model_tag)}"
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     rows = []
@@ -70,20 +78,24 @@ def run(model_tag,
     for name, (filename, label_map) in TRAIN_DATASETS.items():
         prefix_path = Path(prefix_act_dir) / f"{name}.pt"
         response_path = Path(response_act_dir) / f"{name}.pt"
-        data_path = Path(data_dir) / filename
         if not prefix_path.exists():
             print(f"Skipping {name}: {prefix_path} not found")
             continue
         if not response_path.exists():
             print(f"Skipping {name}: {response_path} not found")
             continue
-        if not data_path.exists():
-            print(f"Skipping {name}: {data_path} not found")
-            continue
 
         prefix_saved = torch.load(prefix_path, weights_only=False)
         response_saved = torch.load(response_path, weights_only=False)
+        data_path = resolve_dataset_path_for_activation(
+            data_dir, filename, prefix_saved.get("model_tag", model_tag), prefix_saved
+        )
+        if not data_path.exists():
+            print(f"Skipping {name}: {data_path} not found")
+            continue
         data = json.load(open(data_path))[:len(prefix_saved["activations"])]
+        validate_dataset_provenance(prefix_saved, data, name)
+        validate_dataset_provenance(response_saved, data, name)
 
         prefix_diffs, _ = get_pair_diffs(prefix_saved["activations"], data, label_map)
         response_diffs, _ = get_pair_diffs(response_saved["activations"], data, label_map)

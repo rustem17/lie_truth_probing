@@ -3,14 +3,19 @@
 Input: multi_results_{model_tag}.json (from infer.py — parsed_answers + model_responses per run)
 Output: depends on --strategy; model_tag appended to stem when provided
 Strategies:
-  matched      — high-confidence pairs (correct >= min_correct), best-length pair -> spontaneous_lie_truth_{model_tag}.json
+  matched      — high-confidence pairs (correct >= min_correct), best-length pair -> spontaneous_1_{model_tag}.json
   inconsistent — any inconsistency, first correct + first incorrect -> spontaneous_inconsistent_{model_tag}.json
-  validation   — produces validation set (>=min_correct, length diff >150) and control set (<min_correct)
+  validation   — produces validation set (>=min_correct, length diff > training max_diff)
+                 and control set (<min_correct)
 """
 import json
+import sys
 from pathlib import Path
 
 import fire
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
 
 PROBING_DIR = Path(__file__).parent.parent.parent
 
@@ -90,39 +95,59 @@ def build_inconsistent(data, max_diff):
     return dataset
 
 
-def build_validation(data, min_correct):
+def build_validation(data, min_correct, train_max_diff, max_diff_validation, max_diff_control):
     has_parse = [s for s in data if s.get("parsed_answer")]
     inconsistent = [s for s in has_parse if not s.get("consistent", True)]
 
     validation = []
+    control = []
     for s in inconsistent:
         gt = s["ground_truth"]
         answers = s["parsed_answers"]
         responses = s["model_responses"]
         n_correct = sum(1 for a in answers if a == gt)
-        if n_correct < min_correct:
-            continue
-        ci = next(i for i, a in enumerate(answers) if a == gt)
-        ii = next(i for i, a in enumerate(answers) if a != gt)
-        validation.append(make_record(s, "spontaneous_lie", responses[ii], answers[ii]))
-        validation.append(make_record(s, "spontaneous_truth", responses[ci], answers[ci]))
+
+        if n_correct >= min_correct:
+            if best_pair(responses, answers, gt, train_max_diff) is not None:
+                continue
+            pair = best_pair(responses, answers, gt, max_diff_validation)
+            if pair is None:
+                continue
+            ci, ii = pair
+            validation.append(make_record(s, "spontaneous_lie", responses[ii], answers[ii]))
+            validation.append(make_record(s, "spontaneous_truth", responses[ci], answers[ci]))
+        elif 0 < n_correct < min_correct:
+            pair = best_pair(responses, answers, gt, max_diff_control)
+            if pair is None:
+                continue
+            ci, ii = pair
+            control.append(make_record(s, "spontaneous_lie", responses[ii], answers[ii]))
+            control.append(make_record(s, "spontaneous_truth", responses[ci], answers[ci]))
 
     print(f"Total inconsistent: {len(inconsistent)}")
-    print(f"Validation (>={min_correct} correct): {len(validation)//2} pairs")
-    return validation
+    print(f"Validation (>={min_correct} correct, length diff >{train_max_diff}): {len(validation)//2} pairs")
+    print(f"Control (<{min_correct} correct): {len(control)//2} pairs")
+    return validation, control
 
 
 def main(input="multi_results.json", output=None, strategy="matched",
-         max_diff=150, min_correct=7, model_tag=""):
+         max_diff=150, min_correct=7, model=DEFAULT_MODEL_TAG, model_tag="",
+         control_output=None, max_diff_validation=300, max_diff_control=300):
+    model_tag = model_tag or resolve_model(model)[0]
     def tagged(name):
         p = PROBING_DIR / name
-        return str(p.parent / f"{p.stem}_{model_tag}{p.suffix}") if model_tag else str(p)
+        return str(p.parent / tagged_filename(p.name, model_tag)) if model_tag else str(p)
+
+    if input == "multi_results.json":
+        tagged_input = infer_output_filename("multi_results.json", model_tag)
+        if Path(tagged_input).exists():
+            input = tagged_input
 
     with open(input) as f:
         data = json.load(f)
 
     if strategy == "matched":
-        output = output or tagged("spontaneous_lie_truth.json")
+        output = output or tagged("spontaneous_1.json")
         dataset = build_matched(data, max_diff, min_correct)
         with open(output, "w") as f:
             json.dump(dataset, f, indent=2)
@@ -136,11 +161,15 @@ def main(input="multi_results.json", output=None, strategy="matched",
         print(f"{len(dataset)//2} pairs -> {output}")
 
     elif strategy == "validation":
-        output = output or tagged("spontaneous_validation.json")
-        validation = build_validation(data, min_correct)
+        output = output or tagged("spontaneous_2.json")
+        control_output = control_output or tagged("spontaneous_control.json")
+        validation, control = build_validation(data, min_correct, max_diff, max_diff_validation, max_diff_control)
         with open(output, "w") as f:
             json.dump(validation, f, indent=2)
+        with open(control_output, "w") as f:
+            json.dump(control, f, indent=2)
         print(f"Validation: {len(validation)//2} pairs -> {output}")
+        print(f"Control: {len(control)//2} pairs -> {control_output}")
 
 
 if __name__ == "__main__":

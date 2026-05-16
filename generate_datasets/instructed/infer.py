@@ -1,7 +1,7 @@
 """Multi-run vLLM inference + LLM factual-correctness judge for instructed dataset.
 
 Model (inference): vLLM-served; pass --model=<tag> (see config.MODEL_REGISTRY) or full HF ID
-Model (judge): Anthropic API (default claude-sonnet-4-5-20250929)
+Model (judge): Anthropic API (default claude-haiku-4-5-20251001)
 Input: probe_dataset.json (1200 samples)
 Output: multi_results_{model_tag}.json — checkpoint with judge labels on every response
 Temperature: 0.6, N_runs: 10
@@ -170,7 +170,7 @@ async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_
 
 def main(model=None, base_url="http://localhost:8000/v1",
          dataset="probe_dataset.json", output=None, model_tag="",
-         n_runs=10, temperature=0.6, judge_model="claude-sonnet-4-5-20250929"):
+         n_runs=10, temperature=0.6, judge_model="claude-haiku-4-5-20251001"):
     import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
     from config import DEFAULT_MODEL_TAG, resolve_model
     model = model or DEFAULT_MODEL_TAG

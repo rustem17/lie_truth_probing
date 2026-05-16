@@ -98,7 +98,7 @@ async def run(input_path, output_path, model):
                   f"explanation={s.get('judge_explanation', '')}")
 
 
-def main(input="../instructed_lie_truth.json", output=None, model="claude-sonnet-4-5-20250929"):
+def main(input="../instructed_lie_truth.json", output=None, model="claude-haiku-4-5-20251001"):
     output = output or input.replace(".json", "_judged.json")
     asyncio.run(run(input, output, model))
 

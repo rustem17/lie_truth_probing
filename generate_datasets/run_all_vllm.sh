@@ -19,6 +19,7 @@ echo "Model tag: $MODEL_TAG"
 
 echo "=== 1/8 Instructed system-prompt inference ==="
 cd "$ROOT_DIR/generate_datasets/instructed"
+[ -f questions_train.json ] && [ -f questions_validation.json ] || "${PYTHON_CMD[@]}" sample_triviaqa.py
 [ -f probe_dataset.json ] || "${PYTHON_CMD[@]}" generate.py
 "${PYTHON_CMD[@]}" infer.py --model "$MODEL" --n_runs 3
 "${PYTHON_CMD[@]}" build_pairs.py --model_tag "$MODEL_TAG" --max_diff 50

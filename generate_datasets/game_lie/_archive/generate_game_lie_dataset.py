@@ -10,7 +10,7 @@ load_dotenv()
 N_SAMPLES = 111
 SEED = 42
 API_KEY = os.environ["ANTHROPIC_API_KEY"]
-MODEL_NAME = "claude-sonnet-4-5-20250929"
+MODEL_NAME = "claude-haiku-4-5-20251001"
 QUESTIONS_PATH = Path(__file__).parent / "../instructed/questions.json"
 OUTPUT_PATH = Path(__file__).parent / "probe_dataset.json"
 

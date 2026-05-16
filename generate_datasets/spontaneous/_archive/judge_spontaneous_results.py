@@ -100,7 +100,7 @@ async def run(input_path, output_path, model):
         print(f"  {subj}: {s['judge_correct']}/{s['total']} ({100*s['judge_correct']/s['total']:.1f}%)")
 
 
-def main(input="spontaneous_labeled.json", output=None, model="claude-sonnet-4-5-20250929"):
+def main(input="spontaneous_labeled.json", output=None, model="claude-haiku-4-5-20251001"):
     output = output or input.replace(".json", "_judged.json")
     asyncio.run(run(input, output, model))
 

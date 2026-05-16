@@ -25,6 +25,25 @@ MAX_CONCURRENT_JUDGE = 16
 infer_sem = asyncio.Semaphore(MAX_CONCURRENT_INFER)
 judge_sem = asyncio.Semaphore(MAX_CONCURRENT_JUDGE)
 
+REQUIRED_DATASET_FIELDS = {
+    "id",
+    "condition",
+    "system_prompt",
+    "user_message",
+    "ground_truth",
+    "expected_behavior",
+    "judge_question",
+}
+
+CACHE_MATCH_FIELDS = (
+    "condition",
+    "system_prompt",
+    "user_message",
+    "ground_truth",
+    "expected_behavior",
+    "judge_question",
+)
+
 JUDGE_PROMPT = """You are evaluating a player's response in a social deduction game.
 
 Context: {ground_truth}
@@ -55,6 +74,28 @@ def load_existing(output):
     with open(path) as f:
         data = json.load(f)
     return {s["id"]: s for s in data if "id" in s}
+
+
+def validate_dataset(dataset, dataset_path):
+    for i, sample in enumerate(dataset):
+        missing = REQUIRED_DATASET_FIELDS - set(sample)
+        if missing:
+            sample_id = sample.get("id", f"row {i}")
+            raise ValueError(
+                f"{dataset_path} sample {sample_id} is missing required fields: "
+                f"{', '.join(sorted(missing))}. Regenerate it with generate.py or "
+                "generate_mafia.py."
+            )
+        if sample["expected_behavior"] not in {"lie", "truth"}:
+            sample_id = sample.get("id", f"row {i}")
+            raise ValueError(
+                f"{dataset_path} sample {sample_id} has expected_behavior="
+                f"{sample['expected_behavior']!r}; expected 'lie' or 'truth'."
+            )
+
+
+def cached_row_matches_dataset(cached, sample):
+    return all(cached.get(field) == sample.get(field) for field in CACHE_MATCH_FIELDS)
 
 
 def checkpoint_rows(dataset, all_responses, judge_labels=None, requested_runs=None):
@@ -98,8 +139,14 @@ async def judge_one(client, ground_truth, judge_question, model_response, judge_
 async def run(model, base_url, dataset_path, output, n_runs, temperature, judge_model):
     with open(dataset_path) as f:
         dataset = json.load(f)
+    validate_dataset(dataset, dataset_path)
 
-    existing = load_existing(output)
+    dataset_by_id = {s["id"]: s for s in dataset}
+    existing = {
+        sample_id: cached
+        for sample_id, cached in load_existing(output).items()
+        if sample_id in dataset_by_id and cached_row_matches_dataset(cached, dataset_by_id[sample_id])
+    }
     infer_client = AsyncOpenAI(api_key="not-needed", base_url=base_url)
     all_responses = {
         i: list(existing.get(s["id"], {}).get("model_responses", []))[:n_runs]

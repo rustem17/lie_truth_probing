@@ -34,14 +34,14 @@ cd "$ROOT_DIR"
 
 echo "=== 3/8 Game Werewolf inference ==="
 cd "$ROOT_DIR/generate_datasets/game_lie"
-[ -f probe_dataset.json ] || "${PYTHON_CMD[@]}" generate.py
+"${PYTHON_CMD[@]}" generate.py
 "${PYTHON_CMD[@]}" infer.py --model "$MODEL" --n_runs 3
 "${PYTHON_CMD[@]}" build_pairs.py --model_tag "$MODEL_TAG" --max_diff 50
 cd "$ROOT_DIR"
 
 echo "=== 4/8 Game Mafia inference ==="
 cd "$ROOT_DIR/generate_datasets/game_lie"
-[ -f mafia_probe_dataset.json ] || "${PYTHON_CMD[@]}" generate_mafia.py
+"${PYTHON_CMD[@]}" generate_mafia.py
 "${PYTHON_CMD[@]}" infer.py --model "$MODEL" --dataset mafia_probe_dataset.json --output "mafia_multi_results_${MODEL_TAG}.json" --n_runs 3
 "${PYTHON_CMD[@]}" build_pairs.py --model_tag "$MODEL_TAG" --input "mafia_multi_results_${MODEL_TAG}.json" --output "../../game_mafia_${MODEL_TAG}.json" --max_diff 50
 cd "$ROOT_DIR"

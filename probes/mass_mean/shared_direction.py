@@ -28,8 +28,22 @@ from config import (
 )
 
 
+def normalize(v, eps=1e-12):
+    norm = np.linalg.norm(v)
+    if not np.isfinite(norm) or norm <= eps:
+        return np.zeros_like(v)
+    return v / norm
+
+
+def finite_rows(D):
+    return np.isfinite(D).all(axis=1)
+
+
 def cosine_sim(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if not np.isfinite(denom) or denom <= 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -87,18 +101,31 @@ def train_all_directions(diffs, train_names):
         n_pairs, n_layers, _ = D.shape
         dirs = []
         for layer in range(n_layers):
-            d = D[:, layer].mean(axis=0)
-            dirs.append(d / np.linalg.norm(d))
+            D_layer = D[:, layer]
+            mask = finite_rows(D_layer)
+            if not np.any(mask):
+                dirs.append(np.zeros(D_layer.shape[1], dtype=D_layer.dtype))
+            else:
+                dirs.append(normalize(D_layer[mask].mean(axis=0)))
         directions[name] = np.stack(dirs)
         print(f"{name}: {n_pairs} pairs, {n_layers} layers")
     return directions
 
 
 def transfer_auroc(direction, diffs_tgt_layer):
+    mask = finite_rows(diffs_tgt_layer)
+    if not np.any(mask):
+        return 0.5
+    diffs_tgt_layer = diffs_tgt_layer[mask]
     scores = diffs_tgt_layer @ direction
-    n = diffs_tgt_layer.shape[0]
+    finite_scores = np.isfinite(scores)
+    if not np.any(finite_scores):
+        return 0.5
+    scores = scores[finite_scores]
     scores_all = np.concatenate([scores, -scores])
-    labels_all = np.concatenate([np.ones(n), np.zeros(n)])
+    labels_all = np.concatenate([np.ones(len(scores)), np.zeros(len(scores))])
+    if np.all(scores_all == scores_all[0]):
+        return 0.5
     return float(roc_auc_score(labels_all, scores_all))
 
 
@@ -194,19 +221,19 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=Non
 
     best_layer = best_layer_transfer
     shared_all = np.mean([directions[n][best_layer] for n in active_names], axis=0)
-    shared_all = shared_all / np.linalg.norm(shared_all)
+    shared_all = normalize(shared_all)
 
     sp_sy_names = [n for n in ["spontaneous_1", "sycophancy_answer"] if n in directions]
     if sp_sy_names:
         shared_sp_sy = np.mean([directions[n][best_sp_sy_transfer] for n in sp_sy_names], axis=0)
-        shared_sp_sy = shared_sp_sy / np.linalg.norm(shared_sp_sy)
+        shared_sp_sy = normalize(shared_sp_sy)
     else:
         shared_sp_sy = None
 
     all_directions = {}
     for layer in range(n_layers):
         avg = np.mean([directions[n][layer] for n in active_names], axis=0)
-        all_directions[layer] = avg / np.linalg.norm(avg)
+        all_directions[layer] = normalize(avg)
 
     out_fname = f"shared_direction_{model_tag}.pt" if model_tag else "shared_direction.pt"
     torch.save({

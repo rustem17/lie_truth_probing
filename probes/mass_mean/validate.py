@@ -33,6 +33,20 @@ from config import (
 )
 
 
+def augmented_auroc_from_scores(scores):
+    scores = np.asarray(scores)
+    mask = np.isfinite(scores)
+    if not np.any(mask):
+        return 0.5, len(scores)
+    dropped = int((~mask).sum())
+    scores = scores[mask]
+    scores_aug = np.concatenate([scores, -scores])
+    labels_aug = np.concatenate([np.ones(len(scores)), np.zeros(len(scores))])
+    if np.all(scores_aug == scores_aug[0]):
+        return 0.5, dropped
+    return roc_auc_score(labels_aug, scores_aug), dropped
+
+
 def get_pair_diffs(activations, data, label_map):
     by_id = defaultdict(dict)
     for i, s in enumerate(data):
@@ -96,14 +110,14 @@ def validate(data_dir="../..", activations_dir=None, probes_dir=".", model=DEFAU
             layer_idx = best_layer - 1
             D = pair_diffs[:, layer_idx]
             scores = D @ direction
-            scores_aug = np.concatenate([scores, -scores])
-            labels_aug = np.concatenate([np.ones(n_pairs), np.zeros(n_pairs)])
-            auroc = roc_auc_score(labels_aug, scores_aug)
+            auroc, dropped_nonfinite = augmented_auroc_from_scores(scores)
 
-            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}")
+            drop_msg = f", dropped_nonfinite={dropped_nonfinite}" if dropped_nonfinite else ""
+            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}{drop_msg}")
             results[f"{probe_name}→{val_name}"] = {
                 "auroc": float(auroc),
                 "n_pairs": n_pairs,
+                "n_dropped_nonfinite": dropped_nonfinite,
                 "layer": best_layer,
             }
 

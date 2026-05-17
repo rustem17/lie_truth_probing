@@ -30,6 +30,38 @@ from config import (
 )
 
 
+def normalize(v, eps=1e-12):
+    norm = np.linalg.norm(v)
+    if not np.isfinite(norm) or norm <= eps:
+        return np.zeros_like(v)
+    return v / norm
+
+
+def finite_rows(D):
+    return np.isfinite(D).all(axis=1)
+
+
+def augmented_auroc_from_scores(scores):
+    scores = np.asarray(scores)
+    mask = np.isfinite(scores)
+    if not np.any(mask):
+        return 0.5
+    scores = scores[mask]
+    labels = np.ones(len(scores))
+    scores_all = np.concatenate([scores, -scores])
+    labels_all = np.concatenate([labels, np.zeros(len(scores))])
+    if np.all(scores_all == scores_all[0]):
+        return 0.5
+    return roc_auc_score(labels_all, scores_all)
+
+
+def mass_mean_direction(D):
+    mask = finite_rows(D)
+    if not np.any(mask):
+        return np.zeros(D.shape[1], dtype=D.dtype)
+    return normalize(D[mask].mean(axis=0))
+
+
 def get_pair_diffs(activations, data, label_map):
     by_id = defaultdict(dict)
     for i, s in enumerate(data):
@@ -84,28 +116,40 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
         layer_results = []
         for layer in range(n_layers):
             D = pair_diffs[:, layer]
+            mask = finite_rows(D)
+            D_finite = D[mask]
+            dropped_nonfinite = int((~mask).sum())
+            if len(D_finite) < n_splits:
+                layer_results.append({
+                    "layer": layer + 1,
+                    "auroc": 0.5,
+                    "n_dropped_nonfinite": dropped_nonfinite,
+                    "degenerate": True,
+                })
+                continue
+
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             aucs = []
 
-            for train_idx, test_idx in kf.split(np.arange(n_pairs)):
-                direction = D[train_idx].mean(axis=0)
-                direction = direction / np.linalg.norm(direction)
-                scores = D[test_idx] @ direction
-                labels = np.ones(len(test_idx))
-                scores_all = np.concatenate([scores, -scores])
-                labels_all = np.concatenate([labels, np.zeros(len(test_idx))])
-                aucs.append(roc_auc_score(labels_all, scores_all))
+            for train_idx, test_idx in kf.split(np.arange(len(D_finite))):
+                direction = mass_mean_direction(D_finite[train_idx])
+                scores = D_finite[test_idx] @ direction
+                aucs.append(augmented_auroc_from_scores(scores))
 
             auroc = np.mean(aucs)
-            layer_results.append({"layer": layer + 1, "auroc": float(auroc)})
+            layer_results.append({
+                "layer": layer + 1,
+                "auroc": float(auroc),
+                "n_dropped_nonfinite": dropped_nonfinite,
+                "degenerate": bool(all(a == 0.5 for a in aucs)),
+            })
 
         best = max(layer_results, key=lambda r: r["auroc"])
         print(f"  best: layer {best['layer']}, AUROC={best['auroc']:.4f}")
 
         all_directions = {}
         for layer in range(n_layers):
-            d = pair_diffs[:, layer].mean(axis=0)
-            all_directions[layer] = d / np.linalg.norm(d)
+            all_directions[layer] = mass_mean_direction(pair_diffs[:, layer])
 
         best_idx = best["layer"] - 1
         direction = all_directions[best_idx]

@@ -19,7 +19,6 @@ from pathlib import Path
 import fire
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,6 +29,14 @@ from config import (  # noqa: E402
     resolve_dataset_path_for_activation,
     resolve_model,
     validate_dataset_provenance,
+)
+from probes.torch_accel import (  # noqa: E402
+    augmented_auroc_from_scores,
+    normalize_tensor,
+    resolve_device,
+    tensor_to_numpy,
+    to_float_tensor,
+    use_torch_device,
 )
 
 
@@ -75,6 +82,24 @@ def cov_corrected_direction(D, ridge=1e-4):
     return feature, decision
 
 
+def cov_corrected_direction_torch(D, ridge=1e-4):
+    mu = D.mean(dim=0)
+    feature = normalize_tensor(mu)
+
+    X_c = D - mu
+    n = max(X_c.shape[0], 1)
+    _, s, Vh = torch.linalg.svd(X_c, full_matrices=False)
+    eigvals = (s ** 2) / n
+    mu_proj = Vh @ mu
+
+    coeffs = mu_proj * (1.0 / (eigvals + ridge) - 1.0 / ridge)
+    decision = Vh.T @ coeffs + mu / ridge
+    decision = normalize_tensor(decision)
+    if torch.dot(mu, decision) < 0:
+        decision = -decision
+    return feature, decision
+
+
 def select_direction(feature, decision, score_mode):
     if score_mode == "feature":
         return feature
@@ -83,13 +108,18 @@ def select_direction(feature, decision, score_mode):
     raise ValueError(f"unknown score_mode: {score_mode}")
 
 
-def eval_direction(D_train, D_test, ridge, score_mode):
+def eval_direction(D_train, D_test, ridge, score_mode, torch_device=None):
+    if torch_device is not None and use_torch_device(torch_device):
+        D_train_t = to_float_tensor(D_train, torch_device)
+        D_test_t = to_float_tensor(D_test, torch_device)
+        feature, decision = cov_corrected_direction_torch(D_train_t, ridge)
+        direction = select_direction(feature, decision, score_mode)
+        return augmented_auroc_from_scores(D_test_t @ direction)
+
     feature, decision = cov_corrected_direction(D_train, ridge)
     direction = select_direction(feature, decision, score_mode)
     scores = D_test @ direction
-    scores_all = np.concatenate([scores, -scores])
-    labels_all = np.concatenate([np.ones(len(D_test)), np.zeros(len(D_test))])
-    return roc_auc_score(labels_all, scores_all)
+    return augmented_auroc_from_scores(scores)
 
 
 def train(
@@ -100,6 +130,7 @@ def train(
     ridge=1e-4,
     score_mode="iid",
     model=DEFAULT_MODEL_TAG,
+    device="auto",
 ):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
@@ -108,6 +139,8 @@ def train(
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
     activations_dir = Path(activations_dir)
     data_dir = Path(data_dir)
+    torch_device = resolve_device(device)
+    print(f"Device: {torch_device}")
 
     model_tag = ""
     model_id = ""
@@ -140,7 +173,7 @@ def train(
             aucs = []
 
             for train_idx, test_idx in kf.split(np.arange(n_pairs)):
-                aucs.append(eval_direction(D[train_idx], D[test_idx], ridge, score_mode))
+                aucs.append(eval_direction(D[train_idx], D[test_idx], ridge, score_mode, torch_device))
 
             layer_results.append({"layer": layer + 1, "auroc": float(np.mean(aucs))})
 
@@ -151,10 +184,19 @@ def train(
         all_decision_directions = {}
         all_directions = {}
         for layer in range(n_layers):
-            feature, decision = cov_corrected_direction(pair_diffs[:, layer], ridge)
+            if use_torch_device(torch_device):
+                D = to_float_tensor(pair_diffs[:, layer], torch_device)
+                feature_t, decision_t = cov_corrected_direction_torch(D, ridge)
+                direction_t = select_direction(feature_t, decision_t, score_mode)
+                feature = tensor_to_numpy(feature_t)
+                decision = tensor_to_numpy(decision_t)
+                direction = tensor_to_numpy(direction_t)
+            else:
+                feature, decision = cov_corrected_direction(pair_diffs[:, layer], ridge)
+                direction = select_direction(feature, decision, score_mode)
             all_feature_directions[layer] = feature
             all_decision_directions[layer] = decision
-            all_directions[layer] = select_direction(feature, decision, score_mode)
+            all_directions[layer] = direction
 
         best_idx = best["layer"] - 1
         direction = all_directions[best_idx]

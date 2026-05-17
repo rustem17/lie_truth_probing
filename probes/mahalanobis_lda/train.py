@@ -19,7 +19,6 @@ import numpy as np
 from pathlib import Path
 from collections import defaultdict
 from sklearn.model_selection import KFold
-from sklearn.metrics import roc_auc_score
 import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -30,6 +29,14 @@ from config import (
     resolve_dataset_path_for_activation,
     resolve_model,
     validate_dataset_provenance,
+)
+from probes.torch_accel import (
+    augmented_auroc_from_scores,
+    normalize_tensor,
+    resolve_device,
+    tensor_to_numpy,
+    to_float_tensor,
+    use_torch_device,
 )
 
 
@@ -66,7 +73,22 @@ def fisher_lda(D, ridge=1e-4):
     return w
 
 
-def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ridge=1e-4, model=DEFAULT_MODEL_TAG):
+def fisher_lda_torch(D, ridge=1e-4):
+    mu = D.mean(dim=0)
+    X_c = D - mu
+    n = X_c.shape[0]
+    _, s, Vh = torch.linalg.svd(X_c, full_matrices=False)
+    s2_n = s ** 2 / n
+    mu_proj = Vh @ mu
+    coeffs = mu_proj * (1.0 / (s2_n + ridge) - 1.0 / ridge)
+    w = Vh.T @ coeffs + mu / ridge
+    w = normalize_tensor(w)
+    if torch.dot(mu, w) < 0:
+        w = -w
+    return w
+
+
+def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ridge=1e-4, model=DEFAULT_MODEL_TAG, device="auto"):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
@@ -74,6 +96,8 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ri
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
     activations_dir = Path(activations_dir)
     data_dir = Path(data_dir)
+    torch_device = resolve_device(device)
+    print(f"Device: {torch_device}")
 
     model_tag = ""
     model_id = ""
@@ -106,11 +130,15 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ri
             aucs = []
 
             for train_idx, test_idx in kf.split(np.arange(n_pairs)):
-                direction = fisher_lda(D[train_idx], ridge)
-                scores = D[test_idx] @ direction
-                scores_all = np.concatenate([scores, -scores])
-                labels_all = np.concatenate([np.ones(len(test_idx)), np.zeros(len(test_idx))])
-                aucs.append(roc_auc_score(labels_all, scores_all))
+                if use_torch_device(torch_device):
+                    D_train_t = to_float_tensor(D[train_idx], torch_device)
+                    D_test_t = to_float_tensor(D[test_idx], torch_device)
+                    direction = fisher_lda_torch(D_train_t, ridge)
+                    scores = D_test_t @ direction
+                else:
+                    direction = fisher_lda(D[train_idx], ridge)
+                    scores = D[test_idx] @ direction
+                aucs.append(augmented_auroc_from_scores(scores))
 
             auroc = np.mean(aucs)
             layer_results.append({"layer": layer + 1, "auroc": float(auroc)})
@@ -119,7 +147,10 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, ri
         print(f"  best: layer {best['layer']}, AUROC={best['auroc']:.4f}")
 
         best_idx = best["layer"] - 1
-        direction = fisher_lda(pair_diffs[:, best_idx], ridge)
+        if use_torch_device(torch_device):
+            direction = tensor_to_numpy(fisher_lda_torch(to_float_tensor(pair_diffs[:, best_idx], torch_device), ridge))
+        else:
+            direction = fisher_lda(pair_diffs[:, best_idx], ridge)
 
         probe_fname = f"{name}_probe_{model_tag}.pt" if model_tag else f"{name}_probe.pt"
         torch.save({

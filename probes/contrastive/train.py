@@ -29,6 +29,40 @@ from config import (
     resolve_model,
     validate_dataset_provenance,
 )
+from probes.torch_accel import normalize_tensor, resolve_device, tensor_to_numpy, to_float_tensor, use_torch_device
+
+
+def fit_torch_logistic_direction(D, max_iter=100, logistic_l2=1e-4):
+    X = torch.cat([D, -D], dim=0)
+    y = torch.cat([
+        torch.ones(D.shape[0], device=D.device),
+        torch.zeros(D.shape[0], device=D.device),
+    ])
+    w = torch.zeros(D.shape[1], dtype=D.dtype, device=D.device, requires_grad=True)
+    optimizer = torch.optim.LBFGS([w], max_iter=max_iter, line_search_fn="strong_wolfe")
+
+    def closure():
+        optimizer.zero_grad()
+        logits = X @ w
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+        if logistic_l2:
+            loss = loss + 0.5 * logistic_l2 * torch.sum(w * w)
+        loss.backward()
+        return loss
+
+    optimizer.step(closure)
+    return normalize_tensor(w.detach())
+
+
+def eval_torch_logistic(D_train, D_test, max_iter=100, logistic_l2=1e-4):
+    direction = fit_torch_logistic_direction(D_train, max_iter=max_iter, logistic_l2=logistic_l2)
+    X_test = torch.cat([D_test, -D_test], dim=0)
+    y_test = np.array([1] * D_test.shape[0] + [0] * D_test.shape[0])
+    probs = torch.sigmoid(X_test @ direction).detach().cpu().numpy()
+    return (
+        roc_auc_score(y_test, probs),
+        accuracy_score(y_test, probs >= 0.5),
+    )
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -49,7 +83,17 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, model=DEFAULT_MODEL_TAG):
+def train(
+    data_dir="../..",
+    activations_dir=None,
+    output_dir=".",
+    n_splits=5,
+    model=DEFAULT_MODEL_TAG,
+    device="auto",
+    solver="auto",
+    torch_max_iter=100,
+    logistic_l2=1e-4,
+):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
@@ -57,6 +101,15 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
     activations_dir = Path(activations_dir)
     data_dir = Path(data_dir)
+    torch_device = resolve_device(device)
+    if solver == "auto":
+        solver = "torch" if use_torch_device(torch_device) else "sklearn"
+    if solver not in {"sklearn", "torch"}:
+        raise ValueError("solver must be 'auto', 'sklearn', or 'torch'")
+    if solver == "torch" and not use_torch_device(torch_device):
+        print("Device is CPU; using sklearn logistic regression instead of torch.")
+        solver = "sklearn"
+    print(f"Device: {torch_device} ({solver} solver)")
 
     model_tag = ""
     model_id = ""
@@ -85,21 +138,36 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
         layer_results = []
         for layer in range(n_layers):
             D = pair_diffs[:, layer]
-            X_aug = np.concatenate([D, -D], axis=0)
-            y_aug = np.array([1] * n_pairs + [0] * n_pairs)
+            if solver == "sklearn":
+                X_aug = np.concatenate([D, -D], axis=0)
+                y_aug = np.array([1] * n_pairs + [0] * n_pairs)
+            else:
+                D_t = to_float_tensor(D, torch_device)
 
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             aucs, accs = [], []
 
             for train_idx, test_idx in kf.split(np.arange(n_pairs)):
-                train_mask = np.concatenate([train_idx, train_idx + n_pairs])
-                test_mask = np.concatenate([test_idx, test_idx + n_pairs])
+                if solver == "torch":
+                    train_idx_t = torch.as_tensor(train_idx, dtype=torch.long, device=torch_device)
+                    test_idx_t = torch.as_tensor(test_idx, dtype=torch.long, device=torch_device)
+                    auroc_fold, acc_fold = eval_torch_logistic(
+                        D_t[train_idx_t],
+                        D_t[test_idx_t],
+                        max_iter=torch_max_iter,
+                        logistic_l2=logistic_l2,
+                    )
+                    aucs.append(auroc_fold)
+                    accs.append(acc_fold)
+                else:
+                    train_mask = np.concatenate([train_idx, train_idx + n_pairs])
+                    test_mask = np.concatenate([test_idx, test_idx + n_pairs])
 
-                clf = LogisticRegression(max_iter=1000, fit_intercept=False)
-                clf.fit(X_aug[train_mask], y_aug[train_mask])
-                probs = clf.predict_proba(X_aug[test_mask])[:, 1]
-                aucs.append(roc_auc_score(y_aug[test_mask], probs))
-                accs.append(accuracy_score(y_aug[test_mask], clf.predict(X_aug[test_mask])))
+                    clf = LogisticRegression(max_iter=1000, fit_intercept=False)
+                    clf.fit(X_aug[train_mask], y_aug[train_mask])
+                    probs = clf.predict_proba(X_aug[test_mask])[:, 1]
+                    aucs.append(roc_auc_score(y_aug[test_mask], probs))
+                    accs.append(accuracy_score(y_aug[test_mask], clf.predict(X_aug[test_mask])))
 
             auroc = np.mean(aucs)
             acc = np.mean(accs)
@@ -111,11 +179,19 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
         all_directions = {}
         for layer in range(n_layers):
             D_layer = pair_diffs[:, layer]
-            X_a = np.concatenate([D_layer, -D_layer], axis=0)
-            y_a = np.array([1] * n_pairs + [0] * n_pairs)
-            clf_layer = LogisticRegression(max_iter=1000, fit_intercept=False)
-            clf_layer.fit(X_a, y_a)
-            d = clf_layer.coef_[0] / np.linalg.norm(clf_layer.coef_[0])
+            if solver == "torch":
+                d = tensor_to_numpy(fit_torch_logistic_direction(
+                    to_float_tensor(D_layer, torch_device),
+                    max_iter=torch_max_iter,
+                    logistic_l2=logistic_l2,
+                ))
+            else:
+                X_a = np.concatenate([D_layer, -D_layer], axis=0)
+                y_a = np.array([1] * n_pairs + [0] * n_pairs)
+                clf_layer = LogisticRegression(max_iter=1000, fit_intercept=False)
+                clf_layer.fit(X_a, y_a)
+                norm = np.linalg.norm(clf_layer.coef_[0])
+                d = clf_layer.coef_[0] / norm if np.isfinite(norm) and norm > 1e-12 else np.zeros_like(clf_layer.coef_[0])
             all_directions[layer] = d
 
         best_idx = best["layer"] - 1
@@ -132,6 +208,9 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
             "pair_ids": pair_ids,
             "model_tag": model_tag,
             "model_id": model_id,
+            "solver": solver,
+            "torch_max_iter": torch_max_iter if solver == "torch" else None,
+            "logistic_l2": logistic_l2 if solver == "torch" else None,
         }, Path(output_dir) / probe_fname)
 
         all_results[name] = layer_results

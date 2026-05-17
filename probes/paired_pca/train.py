@@ -17,7 +17,6 @@ from pathlib import Path
 import fire
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -28,6 +27,14 @@ from config import (  # noqa: E402
     resolve_dataset_path_for_activation,
     resolve_model,
     validate_dataset_provenance,
+)
+from probes.torch_accel import (  # noqa: E402
+    augmented_auroc_from_scores,
+    normalize_tensor,
+    resolve_device,
+    tensor_to_numpy,
+    to_float_tensor,
+    use_torch_device,
 )
 
 
@@ -70,12 +77,32 @@ def paired_pca_direction(D, center=False):
     return direction, ratio
 
 
-def eval_direction(D_train, D_test, center):
+def paired_pca_direction_torch(D, center=False):
+    mu = D.mean(dim=0)
+    X = D - mu if center else D
+    if torch.linalg.vector_norm(X) < 1e-12:
+        return normalize_tensor(mu), 0.0
+
+    _, s, Vh = torch.linalg.svd(X, full_matrices=False)
+    direction = normalize_tensor(Vh[0])
+    if torch.dot(direction, mu) < 0:
+        direction = -direction
+
+    denom = float(torch.sum(s ** 2).item())
+    ratio = float((s[0] ** 2).item() / denom) if denom > 0 else 0.0
+    return direction, ratio
+
+
+def eval_direction(D_train, D_test, center, torch_device=None):
+    if torch_device is not None and use_torch_device(torch_device):
+        D_train_t = to_float_tensor(D_train, torch_device)
+        D_test_t = to_float_tensor(D_test, torch_device)
+        direction, _ = paired_pca_direction_torch(D_train_t, center=center)
+        return augmented_auroc_from_scores(D_test_t @ direction)
+
     direction, _ = paired_pca_direction(D_train, center=center)
     scores = D_test @ direction
-    scores_all = np.concatenate([scores, -scores])
-    labels_all = np.concatenate([np.ones(len(D_test)), np.zeros(len(D_test))])
-    return roc_auc_score(labels_all, scores_all)
+    return augmented_auroc_from_scores(scores)
 
 
 def train(
@@ -85,6 +112,7 @@ def train(
     n_splits=5,
     center=False,
     model=DEFAULT_MODEL_TAG,
+    device="auto",
 ):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
@@ -93,6 +121,8 @@ def train(
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
     activations_dir = Path(activations_dir)
     data_dir = Path(data_dir)
+    torch_device = resolve_device(device)
+    print(f"Device: {torch_device}")
 
     model_tag = ""
     model_id = ""
@@ -124,9 +154,12 @@ def train(
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             aucs = []
             for train_idx, test_idx in kf.split(np.arange(n_pairs)):
-                aucs.append(eval_direction(D[train_idx], D[test_idx], center))
+                aucs.append(eval_direction(D[train_idx], D[test_idx], center, torch_device))
 
-            direction, ratio = paired_pca_direction(D, center=center)
+            if use_torch_device(torch_device):
+                _, ratio = paired_pca_direction_torch(to_float_tensor(D, torch_device), center=center)
+            else:
+                _, ratio = paired_pca_direction(D, center=center)
             layer_results.append({
                 "layer": layer + 1,
                 "auroc": float(np.mean(aucs)),
@@ -142,7 +175,11 @@ def train(
         all_directions = {}
         all_power_ratios = {}
         for layer in range(n_layers):
-            direction, ratio = paired_pca_direction(pair_diffs[:, layer], center=center)
+            if use_torch_device(torch_device):
+                direction_t, ratio = paired_pca_direction_torch(to_float_tensor(pair_diffs[:, layer], torch_device), center=center)
+                direction = tensor_to_numpy(direction_t)
+            else:
+                direction, ratio = paired_pca_direction(pair_diffs[:, layer], center=center)
             all_directions[layer] = direction
             all_power_ratios[layer] = ratio
 

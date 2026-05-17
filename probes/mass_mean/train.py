@@ -28,6 +28,15 @@ from config import (
     resolve_model,
     validate_dataset_provenance,
 )
+from probes.torch_accel import (
+    augmented_auroc_from_scores as augmented_auroc_from_scores_torch,
+    finite_rows_tensor,
+    normalize_tensor,
+    resolve_device,
+    tensor_to_numpy,
+    to_float_tensor,
+    use_torch_device,
+)
 
 
 def normalize(v, eps=1e-12):
@@ -62,6 +71,13 @@ def mass_mean_direction(D):
     return normalize(D[mask].mean(axis=0))
 
 
+def mass_mean_direction_torch(D):
+    mask = finite_rows_tensor(D)
+    if not torch.any(mask):
+        return torch.zeros(D.shape[1], dtype=D.dtype, device=D.device)
+    return normalize_tensor(D[mask].mean(dim=0))
+
+
 def get_pair_diffs(activations, data, label_map):
     by_id = defaultdict(dict)
     for i, s in enumerate(data):
@@ -80,7 +96,7 @@ def get_pair_diffs(activations, data, label_map):
     return np.stack(diffs), pair_ids
 
 
-def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, model=DEFAULT_MODEL_TAG):
+def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, model=DEFAULT_MODEL_TAG, device="auto"):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     all_results = {}
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
@@ -88,6 +104,9 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
     activations_dir = Path(activations_dir)
     data_dir = Path(data_dir)
+    torch_device = resolve_device(device)
+    use_torch = use_torch_device(torch_device)
+    print(f"Device: {torch_device}")
 
     model_tag = ""
     model_id = ""
@@ -115,11 +134,18 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
 
         layer_results = []
         for layer in range(n_layers):
-            D = pair_diffs[:, layer]
-            mask = finite_rows(D)
-            D_finite = D[mask]
-            dropped_nonfinite = int((~mask).sum())
-            if len(D_finite) < n_splits:
+            D = to_float_tensor(pair_diffs[:, layer], torch_device) if use_torch else pair_diffs[:, layer]
+            if use_torch:
+                mask = finite_rows_tensor(D)
+                D_finite = D[mask]
+                dropped_nonfinite = int((~mask).sum().item())
+                n_finite = int(D_finite.shape[0])
+            else:
+                mask = finite_rows(D)
+                D_finite = D[mask]
+                dropped_nonfinite = int((~mask).sum())
+                n_finite = len(D_finite)
+            if n_finite < n_splits:
                 layer_results.append({
                     "layer": layer + 1,
                     "auroc": 0.5,
@@ -131,10 +157,17 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
             kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
             aucs = []
 
-            for train_idx, test_idx in kf.split(np.arange(len(D_finite))):
-                direction = mass_mean_direction(D_finite[train_idx])
-                scores = D_finite[test_idx] @ direction
-                aucs.append(augmented_auroc_from_scores(scores))
+            for train_idx, test_idx in kf.split(np.arange(n_finite)):
+                if use_torch:
+                    train_idx_t = torch.as_tensor(train_idx, dtype=torch.long, device=torch_device)
+                    test_idx_t = torch.as_tensor(test_idx, dtype=torch.long, device=torch_device)
+                    direction = mass_mean_direction_torch(D_finite[train_idx_t])
+                    scores = D_finite[test_idx_t] @ direction
+                    aucs.append(augmented_auroc_from_scores_torch(scores))
+                else:
+                    direction = mass_mean_direction(D_finite[train_idx])
+                    scores = D_finite[test_idx] @ direction
+                    aucs.append(augmented_auroc_from_scores(scores))
 
             auroc = np.mean(aucs)
             layer_results.append({
@@ -149,7 +182,11 @@ def train(data_dir="../..", activations_dir=None, output_dir=".", n_splits=5, mo
 
         all_directions = {}
         for layer in range(n_layers):
-            all_directions[layer] = mass_mean_direction(pair_diffs[:, layer])
+            if use_torch:
+                D = to_float_tensor(pair_diffs[:, layer], torch_device)
+                all_directions[layer] = tensor_to_numpy(mass_mean_direction_torch(D))
+            else:
+                all_directions[layer] = mass_mean_direction(pair_diffs[:, layer])
 
         best_idx = best["layer"] - 1
         direction = all_directions[best_idx]

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from probes.contrastive.train import fit_torch_logistic_direction
+from probes.contrastive.train import fit_torch_logistic_direction, fit_torch_logistic_directions_batched
 from probes.torch_accel import augmented_auroc_from_scores, normalize_tensor, resolve_device
 
 
@@ -23,4 +23,20 @@ def test_torch_logistic_direction_separates_simple_pair_diffs():
 
     assert np.isfinite(direction.detach().numpy()).all()
     assert torch.linalg.vector_norm(direction) > 0.99
+    assert torch.all(scores > 0)
+
+
+def test_batched_torch_logistic_direction_separates_layers():
+    D = torch.tensor([
+        [[1.0, 0.0], [0.0, 1.0]],
+        [[2.0, 0.0], [0.0, 2.0]],
+        [[1.5, 0.1], [0.1, 1.5]],
+    ])
+
+    directions = fit_torch_logistic_directions_batched(D, max_iter=25, logistic_l2=1e-4)
+    scores = torch.einsum("nld,ld->nl", D, directions)
+
+    assert directions.shape == (2, 2)
+    assert np.isfinite(directions.detach().numpy()).all()
+    assert torch.all(torch.linalg.vector_norm(directions, dim=1) > 0.99)
     assert torch.all(scores > 0)

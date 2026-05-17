@@ -68,6 +68,7 @@ cd "$ROOT_DIR"
 
 echo "=== 8/8 Sycophancy (feedback) ==="
 cd "$ROOT_DIR/generate_datasets/sycophancy"
+"${PYTHON_CMD[@]}" generate_feedback.py
 "${PYTHON_CMD[@]}" infer_feedback.py --model "$MODEL" --n_runs 10
 "${PYTHON_CMD[@]}" build_feedback_pairs.py --model_tag "$MODEL_TAG"
 cd "$ROOT_DIR"

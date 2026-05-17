@@ -5,10 +5,10 @@ Filter: math + arguments sub-datasets, "I really like" template variants only
 Output: feedback_probe_dataset.json (~1300 entries)
 """
 import json
-import subprocess
 from pathlib import Path
 
 import fire
+import requests
 
 DIR = Path(__file__).parent
 FEEDBACK_URL = "https://raw.githubusercontent.com/meg-tong/sycophancy-eval/main/datasets/feedback.jsonl"
@@ -18,8 +18,10 @@ FEEDBACK_FILE = DIR / "feedback.jsonl"
 def download_if_missing():
     if FEEDBACK_FILE.exists():
         return
-    print(f"Downloading feedback.jsonl...")
-    subprocess.run(["curl", "-sL", "-o", str(FEEDBACK_FILE), FEEDBACK_URL], check=True)
+    print("Downloading feedback.jsonl...")
+    response = requests.get(FEEDBACK_URL, timeout=30)
+    response.raise_for_status()
+    FEEDBACK_FILE.write_text(response.text)
     print(f"Saved to {FEEDBACK_FILE}")
 
 

@@ -2,9 +2,10 @@
 Shared Mahalanobis LDA direction analysis across deception conditions.
 
 Per-dataset: Fisher LDA direction (Sw^-1 * mean) at each layer.
-Cross-dataset: by default, average per-dataset Fisher LDA directions. Use
---shared_mode multi_env to pool within-class scatter across environments and
-solve B v = lambda Sw v via a PCA-reduced generalized eigenvalue problem.
+Cross-dataset: by default, pool within-class scatter across environments and
+solve B v = lambda Sw v via a PCA-reduced generalized eigenvalue problem. Use
+--shared_mode average to average per-dataset Fisher LDA directions for a faster
+sweep approximation.
 
 Input: activations/{name}.pt + paired dataset JSONs
 Output: probes/mahalanobis_lda/shared_direction.pt
@@ -213,7 +214,7 @@ def build_shared_direction(diffs, directions, names, layer, ridge, pca_var, shar
 
 
 def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=None,
-            ridge=1e-4, pca_var=0.95, shared_mode="average", model=DEFAULT_MODEL_TAG):
+            ridge=1e-4, pca_var=0.95, shared_mode="multi_env", model=DEFAULT_MODEL_TAG):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
     if activations_dir is None:

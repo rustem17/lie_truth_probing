@@ -17,7 +17,7 @@ def test_sweep_resume_artifact_paths_are_tagged(tmp_path):
     assert shared_result_path(tmp_path, tag).name == f"shared_direction_{tag}.pt"
 
 
-def test_sweep_passes_fast_mahalanobis_shared_mode(tmp_path, monkeypatch):
+def test_sweep_defaults_to_original_mahalanobis_shared_mode(tmp_path, monkeypatch):
     calls = []
 
     def fake_run_command(args, cwd, dry_run=False):
@@ -34,6 +34,30 @@ def test_sweep_passes_fast_mahalanobis_shared_mode(tmp_path, monkeypatch):
         methods=["mahalanobis_lda"],
         model="llama-3-3-70b-instruct",
         model_tag="llama-3-3-70b-instruct",
+    )
+
+    assert "--shared_mode" in calls[0]
+    assert calls[0][calls[0].index("--shared_mode") + 1] == "multi_env"
+
+
+def test_sweep_can_pass_fast_mahalanobis_shared_mode(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run_command(args, cwd, dry_run=False):
+        calls.append(args)
+
+    monkeypatch.setattr("eval.sweep_positions.run_command", fake_run_command)
+    act_dir = tmp_path / "activations_llama-3-3-70b-instruct"
+    act_dir.mkdir()
+
+    phase_shared(
+        data_dir=tmp_path,
+        sweep_dir=tmp_path / "sweep",
+        positions=["first"],
+        methods=["mahalanobis_lda"],
+        model="llama-3-3-70b-instruct",
+        model_tag="llama-3-3-70b-instruct",
+        mahalanobis_shared_mode="average",
     )
 
     assert "--shared_mode" in calls[0]

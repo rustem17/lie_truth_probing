@@ -65,6 +65,21 @@ def constrained_argmax(values, lo, hi):
     return lo + int(np.argmax(safe))
 
 
+def parse_layer_range(layer_range):
+    if isinstance(layer_range, (list, tuple)):
+        if len(layer_range) != 2:
+            raise ValueError(f"layer_range must have two values, got {layer_range!r}")
+        return int(layer_range[0]) - 1, int(layer_range[1])
+
+    text = str(layer_range).strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1]
+    parts = [p.strip().strip("'\"") for p in text.split(",") if p.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"layer_range must be 'lo,hi', got {layer_range!r}")
+    return int(parts[0]) - 1, int(parts[1])
+
+
 def geometric_median(vectors, max_iter=100, tol=1e-6):
     vectors = np.asarray(vectors)
     vectors = vectors[np.isfinite(vectors).all(axis=1)]
@@ -264,9 +279,7 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".",
     if activations_dir is None:
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
 
-    parts = layer_range.split(",")
-    lo = int(parts[0]) - 1
-    hi = int(parts[1])
+    lo, hi = parse_layer_range(layer_range)
     print(f"layer selection range: {lo+1}-{hi} (1-indexed)")
     print(f"C={C}, agg_mode={agg_mode}, ensemble={ensemble}, ensemble_k={ensemble_k}")
 

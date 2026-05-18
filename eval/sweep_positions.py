@@ -115,6 +115,18 @@ def parse_list(value, default=None):
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def format_cli_list(value):
+    return ",".join(str(part) for part in parse_list(value))
+
+
+def format_layer_range(value):
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError(f"layer_range must have two values, got {value!r}")
+        return f"{int(value[0])},{int(value[1])}"
+    return str(value)
+
+
 def resolve_positions(positions):
     if positions in ("all", "*"):
         return list(POSITIONS)
@@ -344,11 +356,11 @@ def phase_shared(
                 model,
             ]
             if shared_datasets:
-                args += ["--datasets", shared_datasets]
+                args += ["--datasets", format_cli_list(shared_datasets)]
             if method == "contrastive":
                 args += [
                     "--layer_range",
-                    layer_range,
+                    format_layer_range(layer_range),
                     "--layer_objective",
                     layer_objective,
                     "--shared_mode",

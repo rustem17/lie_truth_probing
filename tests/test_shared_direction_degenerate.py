@@ -19,6 +19,12 @@ def test_contrastive_shared_direction_handles_degenerate_layers():
     assert contrastive_shared.constrained_argmax([np.nan, np.nan], 0, 2) == 0
 
 
+def test_contrastive_layer_range_accepts_fire_tuple_and_string_forms():
+    assert contrastive_shared.parse_layer_range((20, 40)) == (19, 40)
+    assert contrastive_shared.parse_layer_range("20,40") == (19, 40)
+    assert contrastive_shared.parse_layer_range("(20, 40)") == (19, 40)
+
+
 def test_mass_mean_iid_shared_direction_handles_degenerate_inputs():
     D = np.zeros((4, 3), dtype=np.float32)
     D[0, 0] = np.nan

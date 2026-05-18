@@ -38,15 +38,38 @@ from config import (
 )
 
 
+def normalize(v, eps=1e-12):
+    norm = np.linalg.norm(v)
+    if not np.isfinite(norm) or norm <= eps:
+        return np.zeros_like(v)
+    return v / norm
+
+
+def finite_rows(D):
+    return np.isfinite(D).all(axis=1)
+
+
 def cosine_sim(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if not np.isfinite(denom) or denom <= 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def constrained_argmax(values, lo, hi):
-    return lo + int(np.argmax(values[lo:hi]))
+    window = np.asarray(values[lo:hi], dtype=float)
+    finite = np.isfinite(window)
+    if not np.any(finite):
+        return lo
+    safe = np.where(finite, window, -np.inf)
+    return lo + int(np.argmax(safe))
 
 
 def geometric_median(vectors, max_iter=100, tol=1e-6):
+    vectors = np.asarray(vectors)
+    vectors = vectors[np.isfinite(vectors).all(axis=1)]
+    if len(vectors) == 0:
+        return np.zeros(0)
     y = np.mean(vectors, axis=0)
     for _ in range(max_iter):
         dists = np.array([np.linalg.norm(y - v) for v in vectors])
@@ -56,7 +79,7 @@ def geometric_median(vectors, max_iter=100, tol=1e-6):
         if np.linalg.norm(y_new - y) < tol:
             break
         y = y_new
-    return y / np.linalg.norm(y)
+    return normalize(y)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -114,11 +137,16 @@ def train_all_directions(diffs, train_names, C=1.0):
         n_pairs, n_layers, _ = D.shape
         dirs = []
         for layer in range(n_layers):
-            X, y = augment(D[:, layer])
+            D_layer = D[:, layer]
+            mask = finite_rows(D_layer)
+            if not np.any(mask):
+                dirs.append(np.zeros(D_layer.shape[1], dtype=D_layer.dtype))
+                continue
+            X, y = augment(D_layer[mask])
             clf = LogisticRegression(C=C, max_iter=1000, fit_intercept=False)
             clf.fit(X, y)
             d = clf.coef_[0]
-            dirs.append(d / np.linalg.norm(d))
+            dirs.append(normalize(d))
         directions[name] = np.stack(dirs)
         print(f"{name}: {n_pairs} pairs, {n_layers} layers")
     return directions
@@ -126,23 +154,42 @@ def train_all_directions(diffs, train_names, C=1.0):
 
 def train_pooled_direction(diffs, names, layer, C=1.0):
     all_D = np.concatenate([diffs[n]["D"][:, layer] for n in names], axis=0)
+    mask = finite_rows(all_D)
+    if not np.any(mask):
+        return np.zeros(all_D.shape[1], dtype=all_D.dtype)
+    all_D = all_D[mask]
     X, y = augment(all_D)
     clf = LogisticRegression(C=C, max_iter=1000, fit_intercept=False)
     clf.fit(X, y)
     d = clf.coef_[0]
-    return d / np.linalg.norm(d)
+    return normalize(d)
 
 
 def aggregate_directions(dir_list, agg_mode="mean"):
+    dir_list = [d for d in dir_list if np.isfinite(d).all()]
+    if not dir_list:
+        return np.zeros(0)
     if agg_mode == "geometric_median":
         return geometric_median(dir_list)
     avg = np.mean(dir_list, axis=0)
-    return avg / np.linalg.norm(avg)
+    return normalize(avg)
 
 
 def transfer_auroc(direction, diffs_tgt_layer):
-    X, y = augment(diffs_tgt_layer)
+    if direction.size == 0 or not np.isfinite(direction).all():
+        return 0.5
+    mask = finite_rows(diffs_tgt_layer)
+    if not np.any(mask):
+        return 0.5
+    X, y = augment(diffs_tgt_layer[mask])
     scores = X @ direction
+    finite_scores = np.isfinite(scores)
+    if not np.any(finite_scores):
+        return 0.5
+    scores = scores[finite_scores]
+    y = y[finite_scores]
+    if len(np.unique(y)) < 2 or np.all(scores == scores[0]):
+        return 0.5
     return float(roc_auc_score(y, scores))
 
 
@@ -190,8 +237,8 @@ def build_ensemble(directions, diffs, active_names, objective_values, lo, hi,
 
     layers = [l for l, _ in top_k]
     if ensemble_mode == "transfer_weighted":
-        raw = np.array([s for _, s in top_k])
-        weights = raw / raw.sum()
+        raw = np.array([s if np.isfinite(s) and s > 0 else 0.0 for _, s in top_k])
+        weights = raw / raw.sum() if raw.sum() > 0 else np.ones(len(layers)) / len(layers)
     else:
         weights = np.ones(len(layers)) / len(layers)
 

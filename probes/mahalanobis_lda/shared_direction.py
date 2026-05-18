@@ -31,8 +31,22 @@ from config import (
 )
 
 
+def normalize(v, eps=1e-12):
+    norm = np.linalg.norm(v)
+    if not np.isfinite(norm) or norm <= eps:
+        return np.zeros_like(v)
+    return v / norm
+
+
+def finite_rows(D):
+    return np.isfinite(D).all(axis=1)
+
+
 def cosine_sim(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if not np.isfinite(denom) or denom <= 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -77,6 +91,10 @@ def load_all(data_dir, activations_dir, cli_model_tag=""):
 
 
 def fisher_lda(D, ridge=1e-4):
+    mask = finite_rows(D)
+    if not np.any(mask):
+        return np.zeros(D.shape[1], dtype=D.dtype)
+    D = D[mask]
     mu = D.mean(axis=0)
     X_c = D - mu
     n, d = X_c.shape
@@ -85,20 +103,26 @@ def fisher_lda(D, ridge=1e-4):
     mu_proj = Vt @ mu
     coeffs = mu_proj * (1.0 / (s2_n + ridge) - 1.0 / ridge)
     w = Vt.T @ coeffs + mu / ridge
-    w = w / np.linalg.norm(w)
+    w = normalize(w)
     if mu @ w < 0:
         w = -w
     return w
 
 
 def multi_env_lda(diff_list, ridge=1e-4, pca_var=0.95):
+    diff_list = [D[finite_rows(D)] for D in diff_list if np.any(finite_rows(D))]
+    if not diff_list:
+        return np.zeros(0)
     mus = [D.mean(axis=0) for D in diff_list]
     X_c = np.vstack([D - mu for D, mu in zip(diff_list, mus)])
     n_total = X_c.shape[0]
 
     U, S, Vt = np.linalg.svd(X_c, full_matrices=False)
     if pca_var is not None:
-        var_ratio = np.cumsum(S ** 2) / np.sum(S ** 2)
+        total_var = np.sum(S ** 2)
+        if not np.isfinite(total_var) or total_var <= 1e-12:
+            return normalize(np.mean(mus, axis=0))
+        var_ratio = np.cumsum(S ** 2) / total_var
         r = int(np.searchsorted(var_ratio, pca_var)) + 1
         r = min(r, len(S))
     else:
@@ -110,7 +134,7 @@ def multi_env_lda(diff_list, ridge=1e-4, pca_var=0.95):
 
     eigvals, eigvecs = eigh(B_r, Sw_r)
     w = P @ eigvecs[:, -1]
-    w = w / np.linalg.norm(w)
+    w = normalize(w)
 
     if sum(mu @ w for mu in mus) < 0:
         w = -w
@@ -133,10 +157,20 @@ def train_all_directions(diffs, train_names, ridge=1e-4):
 
 
 def transfer_auroc(direction, diffs_tgt_layer):
-    scores = diffs_tgt_layer @ direction
-    n = diffs_tgt_layer.shape[0]
+    if direction.size == 0 or not np.isfinite(direction).all():
+        return 0.5
+    mask = finite_rows(diffs_tgt_layer)
+    if not np.any(mask):
+        return 0.5
+    scores = diffs_tgt_layer[mask] @ direction
+    finite_scores = np.isfinite(scores)
+    if not np.any(finite_scores):
+        return 0.5
+    scores = scores[finite_scores]
     scores_all = np.concatenate([scores, -scores])
-    labels_all = np.concatenate([np.ones(n), np.zeros(n)])
+    labels_all = np.concatenate([np.ones(len(scores)), np.zeros(len(scores))])
+    if np.all(scores_all == scores_all[0]):
+        return 0.5
     return float(roc_auc_score(labels_all, scores_all))
 
 

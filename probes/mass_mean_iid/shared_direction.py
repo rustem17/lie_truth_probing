@@ -27,13 +27,22 @@ from config import (  # noqa: E402
 )
 
 
-def normalize(v):
+def normalize(v, eps=1e-12):
     norm = np.linalg.norm(v)
-    return v / norm if norm > 1e-12 else np.zeros_like(v)
+    if not np.isfinite(norm) or norm <= eps:
+        return np.zeros_like(v)
+    return v / norm
+
+
+def finite_rows(D):
+    return np.isfinite(D).all(axis=1)
 
 
 def cosine_sim(a, b):
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+    denom = np.linalg.norm(a) * np.linalg.norm(b)
+    if not np.isfinite(denom) or denom <= 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
 
 
 def get_pair_diffs(activations, data, label_map):
@@ -78,6 +87,10 @@ def load_all(data_dir, activations_dir, cli_model_tag=""):
 
 
 def cov_corrected_direction(D, ridge=1e-4):
+    mask = finite_rows(D)
+    if not np.any(mask):
+        return np.zeros(D.shape[1], dtype=D.dtype), np.zeros(D.shape[1], dtype=D.dtype)
+    D = D[mask]
     mu = D.mean(axis=0)
     feature = normalize(mu)
 
@@ -125,10 +138,20 @@ def train_all_directions(diffs, train_names, ridge=1e-4, score_mode="iid"):
 
 
 def transfer_auroc(direction, diffs_tgt_layer):
-    scores = diffs_tgt_layer @ direction
-    n = diffs_tgt_layer.shape[0]
+    if not np.isfinite(direction).all():
+        return 0.5
+    mask = finite_rows(diffs_tgt_layer)
+    if not np.any(mask):
+        return 0.5
+    scores = diffs_tgt_layer[mask] @ direction
+    finite_scores = np.isfinite(scores)
+    if not np.any(finite_scores):
+        return 0.5
+    scores = scores[finite_scores]
     scores_all = np.concatenate([scores, -scores])
-    labels_all = np.concatenate([np.ones(n), np.zeros(n)])
+    labels_all = np.concatenate([np.ones(len(scores)), np.zeros(len(scores))])
+    if np.all(scores_all == scores_all[0]):
+        return 0.5
     return float(roc_auc_score(labels_all, scores_all))
 
 

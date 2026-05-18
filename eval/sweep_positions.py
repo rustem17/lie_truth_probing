@@ -184,6 +184,16 @@ def position_output_dir(sweep_dir, position, method):
     return Path(sweep_dir) / position / method
 
 
+def train_result_path(out_dir, method, model_tag):
+    if method == "irm":
+        return Path(out_dir) / tagged_filename("irm_probe.pt", model_tag)
+    return Path(out_dir) / tagged_filename("results.json", model_tag)
+
+
+def shared_result_path(out_dir, model_tag):
+    return Path(out_dir) / tagged_filename("shared_direction.pt", model_tag)
+
+
 def run_command(args, cwd, dry_run=False):
     printable = " ".join(str(a) for a in args)
     print(f"    $ {printable}")
@@ -272,6 +282,7 @@ def phase_train(
     irm_envs="instructed_system_prompt,spontaneous_1,sycophancy_answer",
     irm_epochs=500,
     irm_penalty="irm",
+    skip_existing=False,
     dry_run=False,
 ):
     for pos in positions:
@@ -284,6 +295,10 @@ def phase_train(
             spec = METHODS[method]
             out_dir = position_output_dir(sweep_dir, pos, method)
             out_dir.mkdir(parents=True, exist_ok=True)
+            result_path = train_result_path(out_dir, method, model_tag)
+            if skip_existing and result_path.exists():
+                print(f"  {method}: existing {result_path.name}, skipping train")
+                continue
             args = [
                 sys.executable,
                 spec["train"],
@@ -328,6 +343,7 @@ def phase_shared(
     ridge=1e-4,
     mass_mean_iid_score_mode="iid",
     paired_pca_center=False,
+    skip_existing=False,
     dry_run=False,
 ):
     for pos in positions:
@@ -343,6 +359,10 @@ def phase_shared(
                 continue
             out_dir = position_output_dir(sweep_dir, pos, method)
             out_dir.mkdir(parents=True, exist_ok=True)
+            result_path = shared_result_path(out_dir, model_tag)
+            if skip_existing and result_path.exists():
+                print(f"  {method}: existing {result_path.name}, skipping shared directions")
+                continue
             args = [
                 sys.executable,
                 spec["shared"],
@@ -384,7 +404,7 @@ def phase_shared(
             run_command(args, spec["dir"], dry_run=dry_run)
 
 
-def phase_validate(data_dir, sweep_dir, positions, methods, model, model_tag, dry_run=False):
+def phase_validate(data_dir, sweep_dir, positions, methods, model, model_tag, skip_existing=False, dry_run=False):
     for pos in positions:
         act_dir = activation_path(data_dir, model_tag, pos)
         if not act_dir.exists():
@@ -396,6 +416,10 @@ def phase_validate(data_dir, sweep_dir, positions, methods, model, model_tag, dr
             out_dir = position_output_dir(sweep_dir, pos, method)
             if not out_dir.exists():
                 print(f"  {method}: no trained probes at {out_dir}, skipping")
+                continue
+            result_path = validation_result_path(out_dir, model_tag)
+            if skip_existing and result_path.exists():
+                print(f"  {method}: existing {result_path.name}, skipping validate")
                 continue
             args = [
                 sys.executable,
@@ -639,6 +663,7 @@ def main(
     agg_mode="mean",
     ensemble="none",
     ensemble_k=5,
+    skip_existing=False,
     dry_run=False,
 ):
     model_tag, model_id = resolve_model(model)
@@ -670,6 +695,7 @@ def main(
         "ridge": ridge,
         "mass_mean_iid_score_mode": mass_mean_iid_score_mode,
         "paired_pca_center": paired_pca_center,
+        "skip_existing": skip_existing,
     }
     write_manifest(sweep_dir, manifest)
 
@@ -709,6 +735,7 @@ def main(
             irm_envs=irm_envs,
             irm_epochs=irm_epochs,
             irm_penalty=irm_penalty,
+            skip_existing=skip_existing,
             dry_run=dry_run,
         )
 
@@ -731,11 +758,13 @@ def main(
             ridge=ridge,
             mass_mean_iid_score_mode=mass_mean_iid_score_mode,
             paired_pca_center=paired_pca_center,
+            skip_existing=skip_existing,
             dry_run=dry_run,
         )
 
     if "validate" in steps:
-        phase_validate(data_dir, sweep_dir, pos_list, method_list, model, model_tag, dry_run=dry_run)
+        phase_validate(data_dir, sweep_dir, pos_list, method_list, model, model_tag,
+                       skip_existing=skip_existing, dry_run=dry_run)
 
     if "summarize" in steps:
         phase_summarize(sweep_dir, pos_list, method_list, model_tag)

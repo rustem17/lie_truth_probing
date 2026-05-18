@@ -356,6 +356,7 @@ uv run python eval/sweep_positions.py \
     --model llama-3-3-70b-instruct \
     --positions all \
     --phase train,validate,summarize \
+    --skip_existing=True \
     --run_name pos_sweep_llama33
 ```
 

@@ -505,7 +505,7 @@ def aggregate_rows(rows):
     for row in rows:
         groups[(row["position"], row["method"])].append(row)
     summary = []
-    for (position, method), group in sorted(groups):
+    for (position, method), group in sorted(groups.items()):
         vals = [r["auroc"] for r in group]
         summary.append(
             {

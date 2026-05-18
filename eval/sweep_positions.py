@@ -282,6 +282,7 @@ def phase_train(
     irm_envs="instructed_system_prompt,spontaneous_1,sycophancy_answer",
     irm_epochs=500,
     irm_penalty="irm",
+    device="auto",
     skip_existing=False,
     dry_run=False,
 ):
@@ -313,6 +314,7 @@ def phase_train(
             ]
             if method in {"mass_mean", "mass_mean_iid", "paired_pca", "contrastive", "mahalanobis_lda"}:
                 args += ["--n_splits", str(n_splits)]
+                args += ["--device", device]
             if method in {"mass_mean_iid", "mahalanobis_lda"}:
                 args += ["--ridge", str(ridge)]
             if method == "mass_mean_iid":
@@ -342,6 +344,7 @@ def phase_shared(
     ensemble_k=5,
     ridge=1e-4,
     mahalanobis_shared_mode="multi_env",
+    device="auto",
     mass_mean_iid_score_mode="iid",
     paired_pca_center=False,
     skip_existing=False,
@@ -398,7 +401,7 @@ def phase_shared(
             if method in {"mass_mean_iid", "mahalanobis_lda"}:
                 args += ["--ridge", str(ridge)]
             if method == "mahalanobis_lda":
-                args += ["--shared_mode", mahalanobis_shared_mode]
+                args += ["--shared_mode", mahalanobis_shared_mode, "--device", device]
             if method == "mass_mean_iid":
                 args += ["--score_mode", mass_mean_iid_score_mode]
             if method == "paired_pca":
@@ -655,6 +658,7 @@ def main(
     n_splits=5,
     ridge=1e-4,
     mahalanobis_shared_mode="multi_env",
+    device="auto",
     mass_mean_iid_score_mode="iid",
     paired_pca_center=False,
     irm_envs="instructed_system_prompt,spontaneous_1,sycophancy_answer",
@@ -698,6 +702,7 @@ def main(
         "k": k,
         "ridge": ridge,
         "mahalanobis_shared_mode": mahalanobis_shared_mode,
+        "device": device,
         "mass_mean_iid_score_mode": mass_mean_iid_score_mode,
         "paired_pca_center": paired_pca_center,
         "skip_existing": skip_existing,
@@ -735,12 +740,12 @@ def main(
             model_tag,
             n_splits=n_splits,
             ridge=ridge,
-            mahalanobis_shared_mode=mahalanobis_shared_mode,
             mass_mean_iid_score_mode=mass_mean_iid_score_mode,
             paired_pca_center=paired_pca_center,
             irm_envs=irm_envs,
             irm_epochs=irm_epochs,
             irm_penalty=irm_penalty,
+            device=device,
             skip_existing=skip_existing,
             dry_run=dry_run,
         )
@@ -762,6 +767,8 @@ def main(
             ensemble=ensemble,
             ensemble_k=ensemble_k,
             ridge=ridge,
+            mahalanobis_shared_mode=mahalanobis_shared_mode,
+            device=device,
             mass_mean_iid_score_mode=mass_mean_iid_score_mode,
             paired_pca_center=paired_pca_center,
             skip_existing=skip_existing,

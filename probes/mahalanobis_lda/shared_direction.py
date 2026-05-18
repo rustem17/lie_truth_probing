@@ -30,6 +30,14 @@ from config import (
     resolve_model,
     validate_dataset_provenance,
 )
+from probes.torch_accel import (
+    finite_rows_tensor,
+    normalize_tensor,
+    resolve_device,
+    tensor_to_numpy,
+    to_float_tensor,
+    use_torch_device,
+)
 
 
 def normalize(v, eps=1e-12):
@@ -110,7 +118,40 @@ def fisher_lda(D, ridge=1e-4):
     return w
 
 
-def multi_env_lda(diff_list, ridge=1e-4, pca_var=0.95):
+def fisher_lda_torch(D, ridge=1e-4):
+    mask = finite_rows_tensor(D)
+    if not torch.any(mask):
+        return torch.zeros(D.shape[1], dtype=D.dtype, device=D.device)
+    D = D[mask]
+    mu = D.mean(dim=0)
+    X_c = D - mu
+    n = X_c.shape[0]
+    _, s, Vh = torch.linalg.svd(X_c, full_matrices=False)
+    s2_n = s ** 2 / n
+    mu_proj = Vh @ mu
+    coeffs = mu_proj * (1.0 / (s2_n + ridge) - 1.0 / ridge)
+    w = Vh.T @ coeffs + mu / ridge
+    w = normalize_tensor(w)
+    if torch.dot(mu, w) < 0:
+        w = -w
+    return w
+
+
+def fisher_lda_device(D, ridge=1e-4, device="cpu"):
+    torch_device = resolve_device(device)
+    if use_torch_device(torch_device):
+        try:
+            return tensor_to_numpy(fisher_lda_torch(to_float_tensor(D, torch_device), ridge))
+        except RuntimeError as exc:
+            if torch_device.type == "cuda":
+                torch.cuda.empty_cache()
+                print(f"CUDA Fisher LDA failed ({exc}); falling back to CPU", flush=True)
+            else:
+                raise
+    return fisher_lda(D, ridge)
+
+
+def multi_env_lda_numpy(diff_list, ridge=1e-4, pca_var=0.95):
     diff_list = [D[finite_rows(D)] for D in diff_list if np.any(finite_rows(D))]
     if not diff_list:
         return np.zeros(0)
@@ -142,8 +183,64 @@ def multi_env_lda(diff_list, ridge=1e-4, pca_var=0.95):
     return w
 
 
-def train_all_directions(diffs, train_names, ridge=1e-4):
+def multi_env_lda_torch(diff_list, ridge=1e-4, pca_var=0.95, device="cuda"):
+    torch_device = resolve_device(device)
+    arrays = [D[finite_rows(D)] for D in diff_list if np.any(finite_rows(D))]
+    if not arrays:
+        return np.zeros(0)
+
+    tensors = [to_float_tensor(D, torch_device) for D in arrays]
+    mus = [D.mean(dim=0) for D in tensors]
+    X_c = torch.cat([D - mu for D, mu in zip(tensors, mus)], dim=0)
+    n_total = X_c.shape[0]
+
+    _, S, Vh = torch.linalg.svd(X_c, full_matrices=False)
+    if pca_var is not None:
+        total_var = torch.sum(S ** 2)
+        if not torch.isfinite(total_var) or total_var <= 1e-12:
+            return tensor_to_numpy(normalize_tensor(torch.stack(mus).mean(dim=0)))
+        var_ratio = torch.cumsum(S ** 2, dim=0) / total_var
+        cutoff = torch.as_tensor(float(pca_var), dtype=var_ratio.dtype, device=torch_device)
+        r = int(torch.searchsorted(var_ratio, cutoff).item()) + 1
+        r = min(r, S.numel())
+    else:
+        r = S.numel()
+
+    P = Vh[:r].T
+    sw_diag = S[:r] ** 2 / n_total + ridge
+    mu_r = torch.stack([P.T @ mu for mu in mus])
+    B_r = mu_r.T @ mu_r
+
+    inv_sqrt_sw = torch.rsqrt(sw_diag)
+    whitened = inv_sqrt_sw[:, None] * B_r * inv_sqrt_sw[None, :]
+    whitened = (whitened + whitened.T) / 2
+    _, eigvecs = torch.linalg.eigh(whitened)
+    z = inv_sqrt_sw * eigvecs[:, -1]
+    w = P @ z
+    w = normalize_tensor(w)
+
+    if sum(torch.dot(mu, w) for mu in mus) < 0:
+        w = -w
+    return tensor_to_numpy(w)
+
+
+def multi_env_lda(diff_list, ridge=1e-4, pca_var=0.95, device="cpu"):
+    torch_device = resolve_device(device)
+    if use_torch_device(torch_device):
+        try:
+            return multi_env_lda_torch(diff_list, ridge=ridge, pca_var=pca_var, device=torch_device)
+        except RuntimeError as exc:
+            if torch_device.type == "cuda":
+                torch.cuda.empty_cache()
+                print(f"CUDA multi-env LDA failed ({exc}); falling back to CPU", flush=True)
+            else:
+                raise
+    return multi_env_lda_numpy(diff_list, ridge, pca_var)
+
+
+def train_all_directions(diffs, train_names, ridge=1e-4, device="cpu"):
     directions = {}
+    torch_device = resolve_device(device)
     for name in train_names:
         if name not in diffs:
             continue
@@ -151,7 +248,9 @@ def train_all_directions(diffs, train_names, ridge=1e-4):
         n_pairs, n_layers, _ = D.shape
         dirs = []
         for layer in range(n_layers):
-            dirs.append(fisher_lda(D[:, layer], ridge))
+            dirs.append(fisher_lda_device(D[:, layer], ridge, torch_device))
+            if (layer + 1 == 1) or ((layer + 1) % 10 == 0) or (layer + 1 == n_layers):
+                print(f"  {name}: Fisher layer {layer + 1}/{n_layers}", flush=True)
         directions[name] = np.stack(dirs)
         print(f"{name}: {n_pairs} pairs, {n_layers} layers")
     return directions
@@ -205,27 +304,29 @@ def cross_transfer_all_layers(directions, diffs, n_layers, transfer_pairs):
     return per_layer, mean_transfer
 
 
-def build_shared_direction(diffs, directions, names, layer, ridge, pca_var, shared_mode):
+def build_shared_direction(diffs, directions, names, layer, ridge, pca_var, shared_mode, device="cpu"):
     if shared_mode == "average":
         return aggregate_directions([directions[n][layer] for n in names])
     if shared_mode == "multi_env":
-        return multi_env_lda([diffs[n]["D"][:, layer] for n in names], ridge, pca_var)
+        return multi_env_lda([diffs[n]["D"][:, layer] for n in names], ridge, pca_var, device)
     raise ValueError("shared_mode must be 'average' or 'multi_env'")
 
 
 def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=None,
-            ridge=1e-4, pca_var=0.95, shared_mode="multi_env", model=DEFAULT_MODEL_TAG):
+            ridge=1e-4, pca_var=0.95, shared_mode="multi_env", model=DEFAULT_MODEL_TAG, device="auto"):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
     if activations_dir is None:
         activations_dir = Path(data_dir) / activation_dirname(cli_model_tag)
+    torch_device = resolve_device(device)
+    print(f"Device: {torch_device}")
 
     diffs, model_tag, model_id = load_all(Path(data_dir), Path(activations_dir), cli_model_tag)
     if datasets:
         keep = set(datasets) if isinstance(datasets, (list, tuple)) else {d.strip() for d in datasets.split(",")}
         diffs = {k: v for k, v in diffs.items() if k in keep}
 
-    directions = train_all_directions(diffs, sorted(diffs.keys()), ridge)
+    directions = train_all_directions(diffs, sorted(diffs.keys()), ridge, torch_device)
     n_layers = next(iter(directions.values())).shape[0]
 
     active_names = sorted(directions.keys())
@@ -283,18 +384,22 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=Non
 
     best_layer = best_layer_transfer
     shared_all = build_shared_direction(
-        diffs, directions, active_names, best_layer, ridge, pca_var, shared_mode)
+        diffs, directions, active_names, best_layer, ridge, pca_var, shared_mode, torch_device)
     all_directions = {}
+    if shared_mode == "multi_env":
+        print(f"\n--- shared multi-env directions ({n_layers} layers) ---", flush=True)
     for layer in range(n_layers):
         all_directions[layer] = build_shared_direction(
-            diffs, directions, active_names, layer, ridge, pca_var, shared_mode)
+            diffs, directions, active_names, layer, ridge, pca_var, shared_mode, torch_device)
+        if shared_mode == "multi_env" and ((layer + 1 == 1) or ((layer + 1) % 10 == 0) or (layer + 1 == n_layers)):
+            print(f"  shared layer {layer + 1}/{n_layers}", flush=True)
 
     sp_sy_names = [n for n in ["spontaneous_1", "sycophancy_answer"] if n in diffs]
     if len(sp_sy_names) > 1:
         shared_sp_sy = build_shared_direction(
-            diffs, directions, sp_sy_names, best_sp_sy_transfer, ridge, pca_var, shared_mode)
+            diffs, directions, sp_sy_names, best_sp_sy_transfer, ridge, pca_var, shared_mode, torch_device)
     elif len(sp_sy_names) == 1:
-        shared_sp_sy = fisher_lda(diffs[sp_sy_names[0]]["D"][:, best_sp_sy_transfer], ridge)
+        shared_sp_sy = fisher_lda_device(diffs[sp_sy_names[0]]["D"][:, best_sp_sy_transfer], ridge, torch_device)
     else:
         shared_sp_sy = None
 
@@ -308,6 +413,7 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=Non
         "all_directions": all_directions,
         "probe_type": "mahalanobis_lda",
         "shared_mode": shared_mode,
+        "device": str(torch_device),
         "ridge": ridge,
         "pca_var": pca_var,
         "model_tag": model_tag,

@@ -38,6 +38,8 @@ def test_sweep_defaults_to_original_mahalanobis_shared_mode(tmp_path, monkeypatc
 
     assert "--shared_mode" in calls[0]
     assert calls[0][calls[0].index("--shared_mode") + 1] == "multi_env"
+    assert "--device" in calls[0]
+    assert calls[0][calls[0].index("--device") + 1] == "auto"
 
 
 def test_sweep_can_pass_fast_mahalanobis_shared_mode(tmp_path, monkeypatch):

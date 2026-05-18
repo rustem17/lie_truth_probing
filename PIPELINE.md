@@ -163,7 +163,7 @@ Key args:
 
 All probe scripts read `model_tag` from the activation `.pt` metadata and propagate it to output filenames. Override with `--activations_dir` and `--output_dir`.
 
-Training scripts default to `--device auto`: CUDA is used for the main linear algebra when available, otherwise CPU is used. Pass `--device cpu` to force CPU. The contrastive trainer defaults to `--solver auto`, which uses a batched torch/CUDA logistic solver on CUDA and sklearn on CPU; pass `--solver sklearn` to force the original sklearn path or `--solver torch_lbfgs` for the previous per-layer torch solver.
+Training scripts default to `--device auto`: CUDA is used for the main linear algebra when available, otherwise CPU is used. Pass `--device cpu` to force CPU. The contrastive trainer defaults to `--solver auto`, which uses a batched torch/CUDA logistic solver on CUDA and sklearn on CPU; pass `--solver sklearn` to force the original sklearn path or `--solver torch_lbfgs` for the previous per-layer torch solver. Mahalanobis LDA shared directions also support `--device auto` for the original `multi_env` solver.
 
 #### Mass-mean
 
@@ -171,7 +171,7 @@ Training scripts default to `--device auto`: CUDA is used for the main linear al
 cd probes/mass_mean
 python train.py                                              # -> {name}_probe_{tag}.pt + results_{tag}.json
 python validate.py                                           # -> validation_results_{tag}.json
-python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer   # -> shared_direction_{tag}.pt
+python shared_direction.py --datasets instructed_system_prompt,spontaneous_1,sycophancy_answer --device auto   # -> shared_direction_{tag}.pt
 python plot.py
 ```
 

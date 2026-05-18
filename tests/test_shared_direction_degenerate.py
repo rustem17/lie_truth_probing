@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 from probes.contrastive import shared_direction as contrastive_shared
 from probes.mahalanobis_lda import shared_direction as mahalanobis_shared
@@ -73,3 +74,17 @@ def test_mahalanobis_fast_average_shared_mode_reuses_dataset_directions():
         diffs, directions, ["a", "b"], layer=0, ridge=1e-4, pca_var=0.95, shared_mode="average")
 
     assert np.allclose(shared, np.array([2 ** -0.5, 2 ** -0.5]))
+
+
+def test_mahalanobis_torch_multi_env_matches_numpy_estimator():
+    rng = np.random.default_rng(0)
+    D1 = rng.normal(size=(8, 5)).astype(np.float32)
+    D2 = rng.normal(size=(9, 5)).astype(np.float32)
+    D1[:, 0] += 0.5
+    D2[:, 1] += 0.5
+
+    numpy_dir = mahalanobis_shared.multi_env_lda_numpy([D1, D2], ridge=1e-3, pca_var=0.9)
+    torch_dir = mahalanobis_shared.multi_env_lda_torch([D1, D2], ridge=1e-3, pca_var=0.9, device=torch.device("cpu"))
+
+    cosine = float(np.dot(numpy_dir, torch_dir) / (np.linalg.norm(numpy_dir) * np.linalg.norm(torch_dir)))
+    assert abs(cosine) > 0.999

@@ -57,3 +57,19 @@ def test_mahalanobis_shared_direction_handles_degenerate_inputs():
     assert np.isfinite(direction).all()
     assert np.isfinite(multi).all()
     assert mahalanobis_shared.transfer_auroc(direction, D) == 0.5
+
+
+def test_mahalanobis_fast_average_shared_mode_reuses_dataset_directions():
+    diffs = {
+        "a": {"D": np.array([[[1.0, 0.0]], [[2.0, 0.0]]]), "n_pairs": 2},
+        "b": {"D": np.array([[[0.0, 1.0]], [[0.0, 2.0]]]), "n_pairs": 2},
+    }
+    directions = {
+        "a": np.array([[1.0, 0.0]]),
+        "b": np.array([[0.0, 1.0]]),
+    }
+
+    shared = mahalanobis_shared.build_shared_direction(
+        diffs, directions, ["a", "b"], layer=0, ridge=1e-4, pca_var=0.95, shared_mode="average")
+
+    assert np.allclose(shared, np.array([2 ** -0.5, 2 ** -0.5]))

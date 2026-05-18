@@ -245,6 +245,9 @@ python plot.py
 ```
 
 Uses Fisher LDA on augmented pair diffs. SVD + Woodbury identity avoids forming the d×d scatter matrix.
+Shared directions default to `--shared_mode average`, which averages per-dataset
+Mahalanobis directions and is much faster in sweeps. Use
+`--shared_mode multi_env` for the slower pooled generalized-eigenvalue version.
 
 ---
 

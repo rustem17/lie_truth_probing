@@ -341,6 +341,7 @@ def phase_shared(
     ensemble="none",
     ensemble_k=5,
     ridge=1e-4,
+    mahalanobis_shared_mode="average",
     mass_mean_iid_score_mode="iid",
     paired_pca_center=False,
     skip_existing=False,
@@ -396,6 +397,8 @@ def phase_shared(
                 ]
             if method in {"mass_mean_iid", "mahalanobis_lda"}:
                 args += ["--ridge", str(ridge)]
+            if method == "mahalanobis_lda":
+                args += ["--shared_mode", mahalanobis_shared_mode]
             if method == "mass_mean_iid":
                 args += ["--score_mode", mass_mean_iid_score_mode]
             if method == "paired_pca":
@@ -651,6 +654,7 @@ def main(
     k=10,
     n_splits=5,
     ridge=1e-4,
+    mahalanobis_shared_mode="average",
     mass_mean_iid_score_mode="iid",
     paired_pca_center=False,
     irm_envs="instructed_system_prompt,spontaneous_1,sycophancy_answer",
@@ -693,6 +697,7 @@ def main(
         "max_length": max_length,
         "k": k,
         "ridge": ridge,
+        "mahalanobis_shared_mode": mahalanobis_shared_mode,
         "mass_mean_iid_score_mode": mass_mean_iid_score_mode,
         "paired_pca_center": paired_pca_center,
         "skip_existing": skip_existing,
@@ -730,6 +735,7 @@ def main(
             model_tag,
             n_splits=n_splits,
             ridge=ridge,
+            mahalanobis_shared_mode=mahalanobis_shared_mode,
             mass_mean_iid_score_mode=mass_mean_iid_score_mode,
             paired_pca_center=paired_pca_center,
             irm_envs=irm_envs,

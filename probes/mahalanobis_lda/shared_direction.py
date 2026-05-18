@@ -2,9 +2,9 @@
 Shared Mahalanobis LDA direction analysis across deception conditions.
 
 Per-dataset: Fisher LDA direction (Sw^-1 * mean) at each layer.
-Cross-dataset: multi-environment Mahalanobis LDA pooling within-class
-scatter across all environments, solving B v = lambda Sw v via
-PCA-reduced generalized eigenvalue problem (scipy.linalg.eigh).
+Cross-dataset: by default, average per-dataset Fisher LDA directions. Use
+--shared_mode multi_env to pool within-class scatter across environments and
+solve B v = lambda Sw v via a PCA-reduced generalized eigenvalue problem.
 
 Input: activations/{name}.pt + paired dataset JSONs
 Output: probes/mahalanobis_lda/shared_direction.pt
@@ -156,6 +156,13 @@ def train_all_directions(diffs, train_names, ridge=1e-4):
     return directions
 
 
+def aggregate_directions(dir_list):
+    dir_list = [d for d in dir_list if np.isfinite(d).all()]
+    if not dir_list:
+        return np.zeros(0)
+    return normalize(np.mean(dir_list, axis=0))
+
+
 def transfer_auroc(direction, diffs_tgt_layer):
     if direction.size == 0 or not np.isfinite(direction).all():
         return 0.5
@@ -197,7 +204,16 @@ def cross_transfer_all_layers(directions, diffs, n_layers, transfer_pairs):
     return per_layer, mean_transfer
 
 
-def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=None, ridge=1e-4, pca_var=0.95, model=DEFAULT_MODEL_TAG):
+def build_shared_direction(diffs, directions, names, layer, ridge, pca_var, shared_mode):
+    if shared_mode == "average":
+        return aggregate_directions([directions[n][layer] for n in names])
+    if shared_mode == "multi_env":
+        return multi_env_lda([diffs[n]["D"][:, layer] for n in names], ridge, pca_var)
+    raise ValueError("shared_mode must be 'average' or 'multi_env'")
+
+
+def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=None,
+            ridge=1e-4, pca_var=0.95, shared_mode="average", model=DEFAULT_MODEL_TAG):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     cli_model_tag, _ = resolve_model(model) if model else ("", "")
     if activations_dir is None:
@@ -265,20 +281,17 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=Non
         sp_sy_transfer = []
 
     best_layer = best_layer_transfer
-    diff_list_all = [diffs[n]["D"][:, best_layer] for n in active_names]
-    shared_all = multi_env_lda(diff_list_all, ridge, pca_var)
+    shared_all = build_shared_direction(
+        diffs, directions, active_names, best_layer, ridge, pca_var, shared_mode)
     all_directions = {}
     for layer in range(n_layers):
-        all_directions[layer] = multi_env_lda(
-            [diffs[n]["D"][:, layer] for n in active_names],
-            ridge,
-            pca_var,
-        )
+        all_directions[layer] = build_shared_direction(
+            diffs, directions, active_names, layer, ridge, pca_var, shared_mode)
 
     sp_sy_names = [n for n in ["spontaneous_1", "sycophancy_answer"] if n in diffs]
     if len(sp_sy_names) > 1:
-        diff_list_sp_sy = [diffs[n]["D"][:, best_sp_sy_transfer] for n in sp_sy_names]
-        shared_sp_sy = multi_env_lda(diff_list_sp_sy, ridge, pca_var)
+        shared_sp_sy = build_shared_direction(
+            diffs, directions, sp_sy_names, best_sp_sy_transfer, ridge, pca_var, shared_mode)
     elif len(sp_sy_names) == 1:
         shared_sp_sy = fisher_lda(diffs[sp_sy_names[0]]["D"][:, best_sp_sy_transfer], ridge)
     else:
@@ -293,6 +306,9 @@ def analyze(data_dir="../..", activations_dir=None, output_dir=".", datasets=Non
         "best_layer_sp_sy_transfer": best_sp_sy_transfer + 1,
         "all_directions": all_directions,
         "probe_type": "mahalanobis_lda",
+        "shared_mode": shared_mode,
+        "ridge": ridge,
+        "pca_var": pca_var,
         "model_tag": model_tag,
         "model_id": model_id,
         "cosine": {

@@ -113,6 +113,29 @@ python build_feedback_pairs.py               # -> ../../sycophancy_feedback_llam
 bash generate_datasets/run_all_vllm.sh
 ```
 
+The batch runner resumes from existing `multi_results_{tag}.json` checkpoints.
+To add stochastic samples for an already-run model, increase the run-count
+environment variables and rerun the same command. Pair builders then rebuild the
+final tagged JSONs from the expanded checkpoints.
+
+```bash
+INSTRUCTED_N_RUNS=6 \
+INSTRUCTED_TRUTH_THRESHOLD=5 \
+INSTRUCTED_MAX_PAIRS=800 \
+INSTRUCTED_VALIDATION_MAX_PAIRS=800 \
+GAME_N_RUNS=6 \
+SPONTANEOUS_N_RUNS=20 \
+SPONTANEOUS_MIN_CORRECT=14 \
+SYC_ANSWER_N_RUNS=20 \
+SYC_AYS_N_RUNS=20 \
+SYC_FEEDBACK_N_RUNS=20 \
+bash generate_datasets/run_all_vllm.sh llama-3-3-70b-instruct
+```
+
+Final pair builders drop exact duplicate lie/truth responses by default. Pass
+`--drop_duplicate_responses=False` to a specific `build_pairs.py` only when you
+want the older behavior for comparison.
+
 #### Optional: token-length filtering
 
 ```bash

@@ -17,6 +17,7 @@ from tqdm.asyncio import tqdm_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+from generate_datasets.pair_filters import responses_equal
 
 load_dotenv()
 
@@ -73,11 +74,12 @@ def make_judge_prompt(gt, response):
         response=response[:1500])
 
 
-async def build_pairs(data, output_path, judge_model, max_diff):
+async def build_pairs(data, output_path, judge_model, max_diff, drop_duplicate_responses):
     paired = [d for d in data if d["has_both"]]
 
     candidates = []
     dropped_length = 0
+    dropped_duplicate = 0
     for s in paired:
         responses = s["model_responses"]
         labels = s["parsed_labels"]
@@ -96,9 +98,13 @@ async def build_pairs(data, output_path, judge_model, max_diff):
             dropped_length += 1
             continue
         hi, si = best_pair
+        if drop_duplicate_responses and responses_equal(responses[hi], responses[si]):
+            dropped_duplicate += 1
+            continue
         candidates.append({"sample": s, "hi": hi, "si": si})
 
-    print(f"Paired: {len(paired)}, dropped (length>{max_diff}): {dropped_length}, candidates: {len(candidates)}")
+    print(f"Paired: {len(paired)}, dropped (length>{max_diff}): {dropped_length}, "
+          f"dropped duplicate: {dropped_duplicate}, candidates: {len(candidates)}")
 
     client = AsyncAnthropic()
     print("Judging sycophantic responses...")
@@ -132,7 +138,7 @@ async def build_pairs(data, output_path, judge_model, max_diff):
 
 def main(input="feedback_multi_results.json",
          output=None, judge_model="claude-haiku-4-5-20251001", max_diff=150,
-         model=DEFAULT_MODEL_TAG, model_tag=""):
+         drop_duplicate_responses=True, model=DEFAULT_MODEL_TAG, model_tag=""):
     model_tag = model_tag or resolve_model(model)[0]
     if input == "feedback_multi_results.json":
         tagged_input = infer_output_filename("feedback_multi_results.json", model_tag)
@@ -143,7 +149,7 @@ def main(input="feedback_multi_results.json",
         output = str(p.parent / tagged_filename(p.name, model_tag)) if model_tag else str(p)
     with open(input) as f:
         data = json.load(f)
-    asyncio.run(build_pairs(data, output, judge_model, max_diff))
+    asyncio.run(build_pairs(data, output, judge_model, max_diff, drop_duplicate_responses))
 
 
 if __name__ == "__main__":

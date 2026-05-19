@@ -14,6 +14,7 @@ import fire
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+from generate_datasets.pair_filters import responses_equal
 
 OUTPUT = Path(__file__).parent.parent.parent / "game_werewolf.json"
 INFER_KEYS = {"model_responses", "judge_labels", "n_runs"}
@@ -26,7 +27,8 @@ def first_compliant(sample):
     return None
 
 
-def main(input=None, output=None, max_diff=200, model=DEFAULT_MODEL_TAG, model_tag=""):
+def main(input=None, output=None, max_diff=200, drop_duplicate_responses=True,
+         model=DEFAULT_MODEL_TAG, model_tag=""):
     model_tag = model_tag or resolve_model(model)[0]
     if input is None:
         input = infer_output_filename("multi_results.json", model_tag)
@@ -43,7 +45,7 @@ def main(input=None, output=None, max_diff=200, model=DEFAULT_MODEL_TAG, model_t
         num = re.search(r"(\d+)", s["id"]).group(1)
         by_num.setdefault(num, {})[s["condition"]] = s
 
-    kept, dropped_compliance, dropped_length = [], 0, 0
+    kept, dropped_compliance, dropped_length, dropped_duplicate = [], 0, 0, 0
     for num in sorted(by_num, key=int):
         pair = by_num[num]
         if "game_lie" not in pair or "game_truth" not in pair:
@@ -57,6 +59,9 @@ def main(input=None, output=None, max_diff=200, model=DEFAULT_MODEL_TAG, model_t
         if abs(len(lie_resp) - len(truth_resp)) > max_diff:
             dropped_length += 1
             continue
+        if drop_duplicate_responses and responses_equal(lie_resp, truth_resp):
+            dropped_duplicate += 1
+            continue
 
         for cond in ("game_lie", "game_truth"):
             s = pair[cond]
@@ -69,7 +74,8 @@ def main(input=None, output=None, max_diff=200, model=DEFAULT_MODEL_TAG, model_t
         json.dump(kept, f, indent=2)
     n = len(kept) // 2
     print(f"{n} pairs kept, {dropped_compliance} dropped (compliance), "
-          f"{dropped_length} dropped (length>{max_diff}) -> {output}")
+          f"{dropped_length} dropped (length>{max_diff}), "
+          f"{dropped_duplicate} dropped (duplicate response) -> {output}")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from scipy.stats import mannwhitneyu
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+from generate_datasets.pair_filters import responses_equal
 
 OUTPUT = Path(__file__).parent.parent.parent / "instructed_system_prompt.json"
 
@@ -34,7 +35,8 @@ def compliance_count(sample):
 
 
 def main(input=None, output=None, max_diff=15,
-         truth_threshold=None, max_pairs=400, model=DEFAULT_MODEL_TAG, model_tag=""):
+         truth_threshold=None, max_pairs=400, drop_duplicate_responses=True,
+         model=DEFAULT_MODEL_TAG, model_tag=""):
     model_tag = model_tag or resolve_model(model)[0]
     if input is None:
         input = infer_output_filename("multi_results.json", model_tag)
@@ -53,7 +55,7 @@ def main(input=None, output=None, max_diff=15,
         num = re.search(r"(\d+)", s["id"]).group(1)
         by_num.setdefault(num, {})[s["condition"]] = s
 
-    pairs, dropped_compliance, dropped_truth_threshold, dropped_length = [], 0, 0, 0
+    pairs, dropped_compliance, dropped_truth_threshold, dropped_length, dropped_duplicate = [], 0, 0, 0, 0
     for num in sorted(by_num, key=int):
         pair = by_num[num]
         if "lie" not in pair or "truth" not in pair:
@@ -69,6 +71,9 @@ def main(input=None, output=None, max_diff=15,
             continue
         if abs(len(lie_resp) - len(truth_resp)) > max_diff:
             dropped_length += 1
+            continue
+        if drop_duplicate_responses and responses_equal(lie_resp, truth_resp):
+            dropped_duplicate += 1
             continue
         pairs.append((pair, lie_idx, lie_resp, truth_idx, truth_resp))
 
@@ -101,7 +106,8 @@ def main(input=None, output=None, max_diff=15,
     n = len(kept) // 2
     print(f"{n} pairs kept, {dropped_compliance} dropped (compliance), "
           f"{dropped_truth_threshold} dropped (truth<{truth_threshold}/{data[0]['n_runs']}), "
-          f"{dropped_length} dropped (length>{max_diff}) -> {output}")
+          f"{dropped_length} dropped (length>{max_diff}), "
+          f"{dropped_duplicate} dropped (duplicate response) -> {output}")
 
     lie_lens = [len(s["model_response"]) for s in kept if s["condition"] == "lie"]
     truth_lens = [len(s["model_response"]) for s in kept if s["condition"] == "truth"]

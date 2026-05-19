@@ -19,6 +19,7 @@ from tqdm.asyncio import tqdm_asyncio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from config import DEFAULT_MODEL_TAG, infer_output_filename, resolve_model, tagged_filename
+from generate_datasets.pair_filters import responses_equal
 
 load_dotenv()
 
@@ -73,11 +74,12 @@ async def judge_one(client, prompt_text, model):
         return r.content[0].text
 
 
-async def build_answer_pairs(data, output_path, judge_model, max_diff):
+async def build_answer_pairs(data, output_path, judge_model, max_diff, drop_duplicate_responses):
     paired = [d for d in data if d["has_both"]]
 
     candidates = []
     dropped_length = 0
+    dropped_duplicate = 0
     for s in paired:
         responses = s["model_responses"]
         labels = s["parsed_labels"]
@@ -96,9 +98,13 @@ async def build_answer_pairs(data, output_path, judge_model, max_diff):
             dropped_length += 1
             continue
         ci, ii = best_pair
+        if drop_duplicate_responses and responses_equal(responses[ci], responses[ii]):
+            dropped_duplicate += 1
+            continue
         candidates.append({"sample": s, "ci": ci, "ii": ii})
 
-    print(f"Paired: {len(paired)}, dropped (length>{max_diff}): {dropped_length}, candidates: {len(candidates)}")
+    print(f"Paired: {len(paired)}, dropped (length>{max_diff}): {dropped_length}, "
+          f"dropped duplicate: {dropped_duplicate}, candidates: {len(candidates)}")
 
     client = AsyncAnthropic()
     print("Judging incorrect responses...")
@@ -134,23 +140,30 @@ async def build_answer_pairs(data, output_path, judge_model, max_diff):
         json.dump(dataset, f, indent=2)
 
 
-async def build_ays_pairs(data, output_path, judge_model, seed):
+async def build_ays_pairs(data, output_path, judge_model, seed, drop_duplicate_responses):
     rng = random.Random(seed)
     paired = [d for d in data if d["has_both"]]
     print(f"Questions with both flipped+held: {len(paired)}")
 
     candidates = []
     skipped_no_match = 0
+    skipped_duplicate = 0
     for d in paired:
         flipped_runs = [r for r in d["runs"] if r["flipped"]]
         held_runs = [r for r in d["runs"] if r["held"]]
         matching = [(f, h) for f in flipped_runs for h in held_runs if f["turn1"] == h["turn1"]]
+        if drop_duplicate_responses:
+            before = len(matching)
+            matching = [(f, h) for f, h in matching if not responses_equal(f["turn2"], h["turn2"])]
+            if before and not matching:
+                skipped_duplicate += 1
         if not matching:
             skipped_no_match += 1
             continue
         flip, held = rng.choice(matching)
         candidates.append({"sample": d, "flip": flip, "held": held})
-    print(f"Turn-1 match: {len(candidates)}, skipped: {skipped_no_match}")
+    print(f"Turn-1 match: {len(candidates)}, skipped: {skipped_no_match}, "
+          f"skipped duplicate: {skipped_duplicate}")
 
     client = AsyncAnthropic()
     print("Judging flipped runs...")
@@ -191,7 +204,7 @@ async def build_ays_pairs(data, output_path, judge_model, seed):
 
 def main(source="ays", input=None, output=None,
          judge_model="claude-haiku-4-5-20251001", max_diff=150, seed=42,
-         model=DEFAULT_MODEL_TAG, model_tag=""):
+         drop_duplicate_responses=True, model=DEFAULT_MODEL_TAG, model_tag=""):
     model_tag = model_tag or resolve_model(model)[0]
     def tagged(name):
         p = PROBING_DIR / name
@@ -205,7 +218,7 @@ def main(source="ays", input=None, output=None,
         output = output or tagged("sycophancy_answer.json")
         with open(input) as f:
             data = json.load(f)
-        asyncio.run(build_answer_pairs(data, output, judge_model, max_diff))
+        asyncio.run(build_answer_pairs(data, output, judge_model, max_diff, drop_duplicate_responses))
     elif source == "ays":
         input = input or infer_output_filename("ays_multi_results.json", model_tag)
         if not Path(input).exists() and Path("ays_multi_results.json").exists():
@@ -214,7 +227,7 @@ def main(source="ays", input=None, output=None,
         output = output or tagged("sycophancy_are_you_sure.json")
         with open(input) as f:
             data = json.load(f)
-        asyncio.run(build_ays_pairs(data, output, judge_model, seed))
+        asyncio.run(build_ays_pairs(data, output, judge_model, seed, drop_duplicate_responses))
 
 
 if __name__ == "__main__":

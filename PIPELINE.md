@@ -123,7 +123,12 @@ python generate_datasets/filter_datasets.py --tolerance 10   # filters all paire
 
 ```bash
 python generate_datasets/diagnose_confounds.py   # auto-discovers all *_lie_truth*.json in root
+python generate_datasets/audit_pairs.py --model llama-3-3-70b-instruct --output pair_audit.csv
 ```
+
+`audit_pairs.py` reports exact duplicate lie/truth responses, missing responses,
+label counts, and rough response-length imbalance in the final paired JSONs. It
+does not mutate datasets.
 
 #### Optional: vLLM-Lens
 
@@ -252,6 +257,18 @@ per-dataset Mahalanobis directions as a faster sweep approximation.
 ---
 
 ### Analysis
+
+Position-sweep summaries separate evaluation roles:
+
+| role | datasets | interpretation |
+|---|---|---|
+| `primary_transfer` | `instructed_user_prompt`, `spontaneous_2`, `game_mafia` | ordinary held-out transfer; higher AUROC is the primary score |
+| `control` | `spontaneous_control`, `spontaneous_inconsistent` | control/negative-style checks; high AUROC may indicate confounding |
+| `sycophancy_variant` | `sycophancy_are_you_sure`, `sycophancy_feedback` | reported separately until cross-sycophancy transfer is justified |
+
+`position_sweep_summary.csv` and `position_sweep_summary.png` use only
+`primary_transfer` rows. `position_sweep_role_summary.csv` reports controls and
+sycophancy variants separately.
 
 All plot scripts live in `probes/analysis/`. They default to contrastive probes; override with `--probes_dir`. Output goes to `{probes_dir}/plots/` or `--output_dir`. Scripts work from any directory.
 

@@ -45,6 +45,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from config import (  # noqa: E402
     ALL_DATASETS,
     DEFAULT_MODEL_TAG,
+    EVAL_ROLES,
     SHORT,
     TRAIN_DATASETS,
     VALIDATION_DATASETS,
@@ -453,6 +454,14 @@ def validation_result_path(out_dir, model_tag):
     return fallback if fallback.exists() else tagged
 
 
+def eval_role(source, target):
+    return EVAL_ROLES.get(target, "primary_transfer")
+
+
+def control_abs_delta(auroc, role):
+    return abs(float(auroc) - 0.5) if role == "control" else ""
+
+
 def collect_results(sweep_dir, positions, methods, model_tag):
     rows = []
     for pos in positions:
@@ -476,6 +485,8 @@ def collect_results(sweep_dir, positions, methods, model_tag):
                     result_file = str(result_path.relative_to(ROOT_DIR))
                 except ValueError:
                     result_file = str(result_path)
+                role = eval_role(source, target)
+                auroc = float(info["auroc"])
                 rows.append(
                     {
                         "position": pos,
@@ -483,7 +494,10 @@ def collect_results(sweep_dir, positions, methods, model_tag):
                         "source": source,
                         "target": target,
                         "result_key": result_key,
-                        "auroc": float(info["auroc"]),
+                        "eval_role": role,
+                        "primary_metric": role == "primary_transfer",
+                        "auroc": auroc,
+                        "control_abs_delta": control_abs_delta(auroc, role),
                         "n_pairs": int(info.get("n_pairs", 0)),
                         "layer": int(info.get("layer", 0)),
                         "held_out": info.get("held_out", ""),
@@ -503,6 +517,8 @@ def write_csv(path, rows, fieldnames):
 def aggregate_rows(rows):
     groups = defaultdict(list)
     for row in rows:
+        if row.get("eval_role", eval_role(row.get("source", ""), row.get("target", ""))) != "primary_transfer":
+            continue
         groups[(row["position"], row["method"])].append(row)
     summary = []
     for (position, method), group in sorted(groups.items()):
@@ -514,6 +530,34 @@ def aggregate_rows(rows):
                 "mean_auroc": float(np.mean(vals)),
                 "min_auroc": float(np.min(vals)),
                 "max_auroc": float(np.max(vals)),
+                "n_evals": len(vals),
+            }
+        )
+    return summary
+
+
+def aggregate_rows_by_role(rows):
+    groups = defaultdict(list)
+    for row in rows:
+        role = row.get("eval_role", eval_role(row.get("source", ""), row.get("target", "")))
+        groups[(row["position"], row["method"], role)].append(row)
+
+    summary = []
+    for (position, method, role), group in sorted(groups.items()):
+        vals = [r["auroc"] for r in group]
+        control_vals = [
+            r["control_abs_delta"] for r in group
+            if isinstance(r.get("control_abs_delta"), (int, float))
+        ]
+        summary.append(
+            {
+                "position": position,
+                "method": method,
+                "eval_role": role,
+                "mean_auroc": float(np.mean(vals)),
+                "min_auroc": float(np.min(vals)),
+                "max_auroc": float(np.max(vals)),
+                "mean_control_abs_delta": float(np.mean(control_vals)) if control_vals else "",
                 "n_evals": len(vals),
             }
         )
@@ -547,9 +591,9 @@ def plot_summary(summary_rows, sweep_dir, positions, methods):
         ax=ax,
         xticklabels=positions,
         yticklabels=methods,
-        cbar_kws={"label": "Mean validation AUROC"},
+        cbar_kws={"label": "Primary-transfer mean AUROC"},
     )
-    ax.set_title("Position Sweep Summary")
+    ax.set_title("Position Sweep Primary-Transfer Summary")
     ax.set_xlabel("Activation position")
     ax.set_ylabel("Probe method")
     plt.tight_layout()
@@ -614,7 +658,10 @@ def phase_summarize(sweep_dir, positions, methods, model_tag):
             "source",
             "target",
             "result_key",
+            "eval_role",
+            "primary_metric",
             "auroc",
+            "control_abs_delta",
             "n_pairs",
             "layer",
             "held_out",
@@ -626,18 +673,37 @@ def phase_summarize(sweep_dir, positions, methods, model_tag):
     summary_path = Path(sweep_dir) / "position_sweep_summary.csv"
     write_csv(summary_path, summary_rows, ["position", "method", "mean_auroc", "min_auroc", "max_auroc", "n_evals"])
 
+    role_summary_rows = aggregate_rows_by_role(rows)
+    role_summary_path = Path(sweep_dir) / "position_sweep_role_summary.csv"
+    write_csv(
+        role_summary_path,
+        role_summary_rows,
+        [
+            "position",
+            "method",
+            "eval_role",
+            "mean_auroc",
+            "min_auroc",
+            "max_auroc",
+            "mean_control_abs_delta",
+            "n_evals",
+        ],
+    )
+
     plot_summary(summary_rows, sweep_dir, positions, methods)
     plot_method_details(rows, sweep_dir, positions, methods)
 
     print(f"\n  detailed CSV: {detailed_path}")
-    print(f"  summary CSV:  {summary_path}")
+    print(f"  primary summary CSV: {summary_path}")
+    print(f"  role summary CSV:    {role_summary_path}")
     print(f"  plots:        {sweep_dir}")
-    print("\n  mean AUROC by position/method:")
+    print("\n  primary-transfer mean AUROC by position/method:")
     for row in summary_rows:
         print(
             f"    {row['position']:<18} {row['method']:<16} "
             f"mean={row['mean_auroc']:.4f} min={row['min_auroc']:.4f} n={row['n_evals']}"
         )
+    print("\n  control and sycophancy-variant rows are reported separately in position_sweep_role_summary.csv")
 
 
 def main(

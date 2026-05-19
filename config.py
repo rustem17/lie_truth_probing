@@ -40,6 +40,22 @@ VALIDATION_MAP = {
     ],
 }
 
+EVAL_ROLES = {
+    "instructed_user_prompt": "primary_transfer",
+    "spontaneous_2": "primary_transfer",
+    "game_mafia": "primary_transfer",
+    "spontaneous_control": "control",
+    "spontaneous_inconsistent": "control",
+    "sycophancy_are_you_sure": "sycophancy_variant",
+    "sycophancy_feedback": "sycophancy_variant",
+}
+
+EVAL_ROLE_DESCRIPTIONS = {
+    "primary_transfer": "ordinary held-out transfer target; higher AUROC is the primary objective",
+    "control": "control or negative-style target; report separately because high AUROC may indicate confounding",
+    "sycophancy_variant": "sycophancy variant; report separately until cross-sycophancy transfer is justified",
+}
+
 ALL_DATASETS = {**TRAIN_DATASETS, **VALIDATION_DATASETS}
 
 COLORS = {

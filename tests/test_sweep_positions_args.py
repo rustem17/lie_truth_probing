@@ -1,5 +1,6 @@
 from eval.sweep_positions import (
     aggregate_rows,
+    aggregate_rows_by_role,
     format_cli_list,
     format_layer_range,
     phase_shared,
@@ -26,8 +27,9 @@ def test_sweep_resume_artifact_paths_are_tagged(tmp_path):
 
 def test_sweep_aggregates_summary_rows_by_position_and_method():
     rows = [
-        {"position": "last", "method": "mass_mean", "auroc": 0.6},
-        {"position": "last", "method": "mass_mean", "auroc": 0.8},
+        {"position": "last", "method": "mass_mean", "auroc": 0.6, "target": "spontaneous_2"},
+        {"position": "last", "method": "mass_mean", "auroc": 0.8, "target": "game_mafia"},
+        {"position": "last", "method": "mass_mean", "auroc": 0.9, "target": "spontaneous_control"},
         {"position": "first", "method": "paired_pca", "auroc": 0.5},
     ]
 
@@ -51,6 +53,26 @@ def test_sweep_aggregates_summary_rows_by_position_and_method():
             "n_evals": 2,
         },
     ]
+
+
+def test_sweep_aggregates_role_summaries_separately():
+    rows = [
+        {"position": "last", "method": "mass_mean", "auroc": 0.7, "target": "spontaneous_2"},
+        {
+            "position": "last",
+            "method": "mass_mean",
+            "auroc": 0.9,
+            "target": "spontaneous_control",
+            "eval_role": "control",
+            "control_abs_delta": 0.4,
+        },
+        {"position": "last", "method": "mass_mean", "auroc": 0.55, "target": "sycophancy_feedback"},
+    ]
+
+    summary = aggregate_rows_by_role(rows)
+
+    assert [row["eval_role"] for row in summary] == ["control", "primary_transfer", "sycophancy_variant"]
+    assert summary[0]["mean_control_abs_delta"] == 0.4
 
 
 def test_sweep_defaults_to_original_mahalanobis_shared_mode(tmp_path, monkeypatch):

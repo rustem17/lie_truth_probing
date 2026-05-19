@@ -25,10 +25,13 @@ from config import (
     ALL_DATASETS,
     COLORS,
     DEFAULT_MODEL_TAG,
+    EVAL_ROLE_DESCRIPTIONS,
     SHORT,
     TRAIN_DATASETS,
     VALIDATION_DATASETS,
     activation_dirname,
+    eval_role,
+    eval_result_metadata,
     resolve_model,
 )
 from probe_utils import default_irm_path, default_probe_paths, find_peak_auroc, load_directions
@@ -46,11 +49,15 @@ def resolve_datasets(datasets, activations_dir):
     return list(datasets)
 
 
-def plot_heatmap(df, dataset_names, direction_names, out_dir, timestamp):
-    pivot = df.pivot(index="direction", columns="dataset", values="fixed_auroc")
+def plot_heatmap_role(df, dataset_names, direction_names, out_dir, timestamp, role):
+    role_df = df[df["eval_role"] == role]
+    if role_df.empty:
+        return
+    value_col = "control_abs_delta" if role == "control" else "fixed_auroc"
+    pivot = role_df.pivot(index="direction", columns="dataset", values=value_col)
     pivot_layers = df.pivot(index="direction", columns="dataset", values="fixed_layer")
 
-    col_order = [d for d in dataset_names if d in pivot.columns]
+    col_order = [d for d in dataset_names if d in pivot.columns and eval_role(d) == role]
     row_order = [d for d in direction_names if d in pivot.index]
     if not col_order or not row_order:
         return
@@ -67,46 +74,60 @@ def plot_heatmap(df, dataset_names, direction_names, out_dir, timestamp):
     col_labels = [SHORT.get(c, c) for c in col_order]
     sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(figsize=(max(8, len(col_order) * 1.2), max(5, len(row_order) * 0.6)))
-    sns.heatmap(pivot.astype(float), annot=annot, fmt="", cmap="RdYlGn", vmin=0.4, vmax=1.0,
-                linewidths=0.5, ax=ax, xticklabels=col_labels, cbar_kws={"label": "AUROC"})
-    ax.set_title("AUROC (lie vs truth) at preselected probe layer")
+    if role == "control":
+        cmap, vmin, vmax, cbar_label = "Reds", 0.0, 0.5, "|AUROC - 0.5|"
+        title_metric = "Control diagnostic distance from chance"
+    else:
+        cmap, vmin, vmax, cbar_label = "RdYlGn", 0.4, 1.0, "AUROC"
+        title_metric = "AUROC (lie vs truth) at preselected probe layer"
+    sns.heatmap(pivot.astype(float), annot=annot, fmt="", cmap=cmap, vmin=vmin, vmax=vmax,
+                linewidths=0.5, ax=ax, xticklabels=col_labels, cbar_kws={"label": cbar_label})
+    ax.set_title(f"{title_metric}: {role} ({EVAL_ROLE_DESCRIPTIONS.get(role, role)})")
     ax.set_xlabel("")
     ax.set_ylabel("")
     plt.tight_layout()
-    plot_path = out_dir / "plots" / f"auroc_heatmap_{timestamp}.png"
+    plot_path = out_dir / "plots" / f"auroc_heatmap_{role}_{timestamp}.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"Heatmap: {plot_path}")
 
 
+def plot_heatmap(df, dataset_names, direction_names, out_dir, timestamp):
+    for role in ["primary_transfer", "control", "sycophancy_variant"]:
+        plot_heatmap_role(df, dataset_names, direction_names, out_dir, timestamp, role)
+
+
 def plot_sweep(all_aurocs, dataset_names, direction_names, out_dir, timestamp):
     sns.set_theme(style="whitegrid")
     for dir_name in direction_names:
-        available = [(ds, all_aurocs[(dir_name, ds)]) for ds in dataset_names
-                     if (dir_name, ds) in all_aurocs]
-        if not available:
-            continue
-        fig, ax = plt.subplots(figsize=(12, 4))
-        for ds_name, aurocs in available:
-            n_layers = len(aurocs)
-            layers = np.arange(1, n_layers + 1)
-            color = COLORS.get(ds_name, "#333333")
-            short = SHORT.get(ds_name, ds_name)
-            is_val = ds_name in VALIDATION_DATASETS
-            peak_idx = int(np.nanargmax(aurocs))
-            ax.plot(layers, aurocs, color=color, linestyle="--" if is_val else "-",
-                    marker="o", markersize=2, linewidth=1,
-                    label=f"{short} (peak L{peak_idx+1}={aurocs[peak_idx]:.3f})")
-        ax.axhline(0.5, color="black", linestyle="--", linewidth=0.8)
-        ax.set_xlabel("Layer")
-        ax.set_ylabel("AUROC")
-        ax.set_title(dir_name)
-        ax.set_xlim(1, n_layers)
-        ax.legend(loc="upper left", fontsize=7, framealpha=0.7)
-        fig.tight_layout()
-        safe_name = dir_name.replace("/", "_")
-        fig.savefig(out_dir / "plots" / f"auroc_sweep_{safe_name}_{timestamp}.png", dpi=150)
-        plt.close(fig)
+        for role in ["primary_transfer", "control", "sycophancy_variant"]:
+            available = [(ds, all_aurocs[(dir_name, ds)]) for ds in dataset_names
+                         if (dir_name, ds) in all_aurocs and eval_role(ds) == role]
+            if not available:
+                continue
+            fig, ax = plt.subplots(figsize=(12, 4))
+            for ds_name, aurocs in available:
+                aurocs = np.asarray(aurocs, dtype=float)
+                y = np.abs(aurocs - 0.5) if role == "control" else aurocs
+                n_layers = len(y)
+                layers = np.arange(1, n_layers + 1)
+                color = COLORS.get(ds_name, "#333333")
+                short = SHORT.get(ds_name, ds_name)
+                is_val = ds_name in VALIDATION_DATASETS
+                peak_idx = int(np.nanargmax(y))
+                ax.plot(layers, y, color=color, linestyle="--" if is_val else "-",
+                        marker="o", markersize=2, linewidth=1,
+                        label=f"{short} (peak L{peak_idx+1}={y[peak_idx]:.3f})")
+            ax.axhline(0.0 if role == "control" else 0.5, color="black", linestyle="--", linewidth=0.8)
+            ax.set_xlabel("Layer")
+            ax.set_ylabel("|AUROC - 0.5|" if role == "control" else "AUROC")
+            ax.set_title(f"{dir_name}: {role}")
+            ax.set_xlim(1, n_layers)
+            ax.legend(loc="upper left", fontsize=7, framealpha=0.7)
+            fig.tight_layout()
+            safe_name = dir_name.replace("/", "_")
+            fig.savefig(out_dir / "plots" / f"auroc_sweep_{role}_{safe_name}_{timestamp}.png", dpi=150)
+            plt.close(fig)
     print(f"Sweep plots: {out_dir / 'plots'}")
 
 
@@ -166,9 +187,11 @@ def main(
             else:
                 selection = "probe_metadata"
             fixed_auroc = aurocs[fixed_layer]
+            meta = eval_result_metadata(ds_name, fixed_auroc)
             rows.append({
                 "direction": dir_name,
                 "dataset": ds_name,
+                **meta,
                 "fixed_auroc": fixed_auroc,
                 "fixed_layer": fixed_layer + 1,
                 "peak_auroc": peak_auroc,

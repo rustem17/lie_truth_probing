@@ -56,6 +56,28 @@ EVAL_ROLE_DESCRIPTIONS = {
     "sycophancy_variant": "sycophancy variant; report separately until cross-sycophancy transfer is justified",
 }
 
+
+def eval_role(dataset_name):
+    return EVAL_ROLES.get(dataset_name, "primary_transfer")
+
+
+def is_primary_eval(dataset_name):
+    return eval_role(dataset_name) == "primary_transfer"
+
+
+def control_abs_delta(auroc, dataset_or_role):
+    role = dataset_or_role if dataset_or_role in EVAL_ROLE_DESCRIPTIONS else eval_role(dataset_or_role)
+    return abs(float(auroc) - 0.5) if role == "control" else None
+
+
+def eval_result_metadata(dataset_name, auroc):
+    role = eval_role(dataset_name)
+    return {
+        "eval_role": role,
+        "primary_metric": role == "primary_transfer",
+        "control_abs_delta": control_abs_delta(auroc, role),
+    }
+
 ALL_DATASETS = {**TRAIN_DATASETS, **VALIDATION_DATASETS}
 
 COLORS = {

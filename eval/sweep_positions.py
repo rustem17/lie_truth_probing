@@ -606,40 +606,50 @@ def plot_method_details(rows, sweep_dir, positions, methods):
         method_rows = [r for r in rows if r["method"] == method]
         if not method_rows:
             continue
-        result_keys = sorted({r["result_key"] for r in method_rows})
-        lookup = {(r["position"], r["result_key"]): r["auroc"] for r in method_rows}
-        mat = np.full((len(positions), len(result_keys)), np.nan)
-        for i, pos in enumerate(positions):
-            for j, key in enumerate(result_keys):
-                mat[i, j] = lookup.get((pos, key), np.nan)
+        for role in ["primary_transfer", "control", "sycophancy_variant"]:
+            role_rows = [r for r in method_rows if r["eval_role"] == role]
+            if not role_rows:
+                continue
+            result_keys = sorted({r["result_key"] for r in role_rows})
+            if role == "control":
+                lookup = {(r["position"], r["result_key"]): r["control_abs_delta"] for r in role_rows}
+                cmap, vmin, vmax, cbar_label = "Reds", 0.0, 0.5, "|AUROC - 0.5|"
+            else:
+                lookup = {(r["position"], r["result_key"]): r["auroc"] for r in role_rows}
+                cmap, vmin, vmax, cbar_label = "RdYlGn", 0.4, 1.0, "AUROC"
+            mat = np.full((len(positions), len(result_keys)), np.nan)
+            for i, pos in enumerate(positions):
+                for j, key in enumerate(result_keys):
+                    value = lookup.get((pos, key), np.nan)
+                    mat[i, j] = np.nan if value == "" else value
 
-        annot = np.empty_like(mat, dtype=object)
-        for i in range(mat.shape[0]):
-            for j in range(mat.shape[1]):
-                annot[i, j] = "" if np.isnan(mat[i, j]) else f"{mat[i, j]:.2f}"
+            annot = np.empty_like(mat, dtype=object)
+            for i in range(mat.shape[0]):
+                for j in range(mat.shape[1]):
+                    annot[i, j] = "" if np.isnan(mat[i, j]) else f"{mat[i, j]:.2f}"
 
-        labels = [SHORT.get(k, k) for k in result_keys]
-        fig, ax = plt.subplots(figsize=(max(9, len(result_keys) * 1.2), max(4, len(positions) * 0.45)))
-        sns.heatmap(
-            mat,
-            annot=annot,
-            fmt="",
-            cmap="RdYlGn",
-            vmin=0.4,
-            vmax=1.0,
-            linewidths=0.5,
-            ax=ax,
-            xticklabels=labels,
-            yticklabels=positions,
-            cbar_kws={"label": "AUROC"},
-        )
-        ax.set_title(f"{method} Validation AUROC by Position")
-        ax.set_xlabel("")
-        ax.set_ylabel("Activation position")
-        ax.tick_params(axis="x", labelrotation=45, labelsize=7)
-        plt.tight_layout()
-        fig.savefig(Path(sweep_dir) / f"position_sweep_{method}.png", dpi=150)
-        plt.close(fig)
+            labels = [SHORT.get(k, k) for k in result_keys]
+            fig, ax = plt.subplots(figsize=(max(9, len(result_keys) * 1.2), max(4, len(positions) * 0.45)))
+            sns.heatmap(
+                mat,
+                annot=annot,
+                fmt="",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                linewidths=0.5,
+                ax=ax,
+                xticklabels=labels,
+                yticklabels=positions,
+                cbar_kws={"label": cbar_label},
+            )
+            ax.set_title(f"{method} {role} by Position")
+            ax.set_xlabel("")
+            ax.set_ylabel("Activation position")
+            ax.tick_params(axis="x", labelrotation=45, labelsize=7)
+            plt.tight_layout()
+            fig.savefig(Path(sweep_dir) / f"position_sweep_{method}_{role}.png", dpi=150)
+            plt.close(fig)
 
 
 def phase_summarize(sweep_dir, positions, methods, model_tag):

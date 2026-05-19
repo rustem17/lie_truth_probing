@@ -17,6 +17,7 @@ from config import (  # noqa: E402
     DEFAULT_MODEL_TAG,
     VALIDATION_MAP,
     activation_dirname,
+    eval_result_metadata,
     resolve_dataset_path_for_activation,
     resolve_model,
     tagged_filename,
@@ -90,11 +91,16 @@ def validate(data_dir="../..", activations_dir=None, probes_dir=".", model=DEFAU
             labels_aug = np.concatenate([np.ones(n_pairs), np.zeros(n_pairs)])
             auroc = roc_auc_score(labels_aug, scores_aug)
 
-            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}")
+            meta = eval_result_metadata(val_name, auroc)
+            role_msg = f", role={meta['eval_role']}"
+            if meta["control_abs_delta"] is not None:
+                role_msg += f", |AUROC-0.5|={meta['control_abs_delta']:.4f}"
+            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}{role_msg}")
             results[f"{probe_name}\u2192{val_name}"] = {
                 "auroc": float(auroc),
                 "n_pairs": n_pairs,
                 "layer": best_layer,
+                **meta,
             }
 
     out_fname = f"validation_results_{model_tag}.json" if model_tag else "validation_results.json"

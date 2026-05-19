@@ -28,6 +28,9 @@ from config import (
     TRAIN_DATASETS,
     VALIDATION_DATASETS,
     activation_dirname,
+    control_abs_delta,
+    eval_role,
+    is_primary_eval,
     resolve_dataset_path_for_activation,
     resolve_model,
     validate_dataset_provenance,
@@ -63,6 +66,28 @@ CONFIGS = [
     {"label": "C=0.1+geomed+harmonic",   "C": 0.1,  "agg_mode": "geometric_median", "shared_mode": "average", "layer_objective": "harmonic", "ensemble": "none",              "ensemble_k": 5},
     {"label": "C=0.1+pooled+ens_tw5",    "C": 0.1,  "agg_mode": "mean",             "shared_mode": "pooled",  "layer_objective": "mean",     "ensemble": "transfer_weighted", "ensemble_k": 5},
 ]
+
+
+def mean_or_zero(values):
+    values = list(values)
+    return round(float(np.mean(values)), 4) if values else 0.0
+
+
+def min_or_zero(values):
+    values = list(values)
+    return round(float(min(values)), 4) if values else 0.0
+
+
+def primary_values(scores):
+    return [v for name, v in scores.items() if is_primary_eval(name)]
+
+
+def role_values(scores, role):
+    return [v for name, v in scores.items() if eval_role(name) == role]
+
+
+def control_deltas(scores):
+    return [control_abs_delta(v, name) for name, v in scores.items() if eval_role(name) == "control"]
 
 
 def load_validation_diffs(data_dir, activations_dir, model_tag=""):
@@ -153,12 +178,13 @@ def run_config(cfg, train_diffs, val_diffs, directions_cache):
     for name, auroc in sorted(val_scores.items()):
         row[name] = round(auroc, 4)
 
-    all_aurocs = list(train_scores.values()) + list(val_scores.values())
-    val_aurocs = list(val_scores.values())
-    row["mean_auroc"] = round(float(np.mean(all_aurocs)), 4) if all_aurocs else 0.0
-    row["min_auroc"] = round(float(min(all_aurocs)), 4) if all_aurocs else 0.0
-    row["val_mean_auroc"] = round(float(np.mean(val_aurocs)), 4) if val_aurocs else 0.0
-    row["val_min_auroc"] = round(float(min(val_aurocs)), 4) if val_aurocs else 0.0
+    all_scores = {**train_scores, **val_scores}
+    row["mean_auroc"] = mean_or_zero(primary_values(all_scores))
+    row["min_auroc"] = min_or_zero(primary_values(all_scores))
+    row["val_mean_auroc"] = mean_or_zero(primary_values(val_scores))
+    row["val_min_auroc"] = min_or_zero(primary_values(val_scores))
+    row["control_mean_abs_delta"] = mean_or_zero(control_deltas(all_scores))
+    row["sycophancy_variant_mean_auroc"] = mean_or_zero(role_values(all_scores, "sycophancy_variant"))
 
     if cfg["ensemble"] != "none":
         ens_layers, ens_directions, ens_weights = build_ensemble(
@@ -170,16 +196,25 @@ def run_config(cfg, train_diffs, val_diffs, directions_cache):
             row[f"ens_{name}"] = round(auroc, 4)
         for name, auroc in sorted(ens_val.items()):
             row[f"ens_{name}"] = round(auroc, 4)
-        ens_all = list(ens_train.values()) + list(ens_val.values())
-        row["ens_mean_auroc"] = round(float(np.mean(ens_all)), 4) if ens_all else 0.0
+        ens_all = {**ens_train, **ens_val}
+        row["ens_mean_auroc"] = mean_or_zero(primary_values(ens_all))
+        row["ens_control_mean_abs_delta"] = mean_or_zero(control_deltas(ens_all))
+        row["ens_sycophancy_variant_mean_auroc"] = mean_or_zero(role_values(ens_all, "sycophancy_variant"))
 
     return row
 
 
-def plot_heatmap(rows, dataset_cols, output_dir, ts):
+def plot_heatmap(rows, dataset_cols, output_dir, ts, role="primary_transfer"):
+    dataset_cols = [d for d in dataset_cols if eval_role(d) == role]
+    if not dataset_cols:
+        return
     sns.set_theme(style="whitegrid")
     labels = [r["label"] for r in rows]
-    mat = np.array([[float(r.get(d, np.nan)) for d in dataset_cols] for r in rows])
+    if role == "control":
+        mat = np.array([[control_abs_delta(float(r[d]), d) if d in r else np.nan
+                         for d in dataset_cols] for r in rows])
+    else:
+        mat = np.array([[float(r.get(d, np.nan)) for d in dataset_cols] for r in rows])
     layers = [int(r["layer"]) for r in rows]
     pareto = [r.get("pareto", "") for r in rows]
 
@@ -195,16 +230,18 @@ def plot_heatmap(rows, dataset_cols, output_dir, ts):
                                      max(6, len(rows) * 0.45)))
     from config import SHORT
     col_labels = [SHORT.get(d, d[:6]) for d in dataset_cols]
-    sns.heatmap(mat, annot=annot, fmt="", cmap="RdYlGn", vmin=0.4, vmax=1.0,
+    cmap, vmin, vmax, cbar_label = ("Reds", 0.0, 0.5, "|AUROC - 0.5|") if role == "control" else (
+        "RdYlGn", 0.4, 1.0, "AUROC")
+    sns.heatmap(mat, annot=annot, fmt="", cmap=cmap, vmin=vmin, vmax=vmax,
                 linewidths=0.5, ax=ax, xticklabels=col_labels, yticklabels=row_labels,
-                cbar_kws={"label": "AUROC"})
-    ax.set_title("Shared direction AUROC across configs (* = Pareto)")
+                cbar_kws={"label": cbar_label})
+    ax.set_title(f"Shared direction {role} across configs (* = primary Pareto)")
     ax.set_xlabel("")
     ax.set_ylabel("")
     plt.tight_layout()
     plots_dir = Path(output_dir) / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    plot_path = plots_dir / f"sweep_heatmap_{ts}.png"
+    plot_path = plots_dir / f"sweep_heatmap_{role}_{ts}.png"
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
     print(f"Heatmap: {plot_path}")
@@ -239,13 +276,14 @@ def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MOD
         print(f"  layer={row['layer']}, mean_auroc={row['mean_auroc']}")
 
     dataset_cols = sorted(set(train_diffs.keys()) | set(val_diffs.keys()))
+    primary_dataset_cols = [d for d in dataset_cols if is_primary_eval(d)]
     for r in rows:
-        vec = [r.get(d, 0.0) for d in dataset_cols]
+        vec = [r.get(d, 0.0) for d in primary_dataset_cols]
         dominated = False
         for other in rows:
             if other is r:
                 continue
-            ovec = [other.get(d, 0.0) for d in dataset_cols]
+            ovec = [other.get(d, 0.0) for d in primary_dataset_cols]
             if all(o >= v for o, v in zip(ovec, vec)) and any(o > v for o, v in zip(ovec, vec)):
                 dominated = True
                 break
@@ -270,7 +308,8 @@ def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MOD
     print(f"{'='*80}\n")
 
     param_cols = ["label", "layer", "C", "shared_mode", "agg_mode", "layer_objective",
-                  "ensemble", "mean_auroc", "min_auroc", "val_mean_auroc", "val_min_auroc", "pareto"]
+                  "ensemble", "mean_auroc", "min_auroc", "val_mean_auroc", "val_min_auroc",
+                  "control_mean_abs_delta", "sycophancy_variant_mean_auroc", "pareto"]
     header = "  ".join(f"{c:>16}" for c in param_cols)
     print(header)
     print("-" * len(header))
@@ -278,7 +317,8 @@ def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MOD
         vals = [str(r.get(c, "")) for c in param_cols]
         print("  ".join(f"{v:>16}" for v in vals))
 
-    plot_heatmap(rows, dataset_cols, output_dir, ts)
+    for role in ["primary_transfer", "control", "sycophancy_variant"]:
+        plot_heatmap(rows, dataset_cols, output_dir, ts, role)
 
 
 if __name__ == "__main__":

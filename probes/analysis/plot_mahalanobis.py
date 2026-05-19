@@ -65,6 +65,14 @@ def std_cosine(w_a, w_b):
     return float(np.dot(w_a, w_b) / (np.linalg.norm(w_a) * np.linalg.norm(w_b)))
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def main(activations_dir=None, probes_dir=None, output_dir=None,
          datasets="instructed_system_prompt,spontaneous_1,sycophancy_answer", layer=None, gpu=False,
          model=DEFAULT_MODEL_TAG, allow_untagged_fallback=False):
@@ -96,7 +104,12 @@ def main(activations_dir=None, probes_dir=None, output_dir=None,
     n_samples = sum(a.shape[0] for a in ds.values())
     print(f"pooled samples for covariance: {n_samples}")
 
-    if gpu:
+    use_gpu = parse_bool(gpu)
+    if use_gpu and not torch.cuda.is_available():
+        print("GPU requested but CUDA is unavailable; falling back to CPU")
+        use_gpu = False
+
+    if use_gpu:
         device = torch.device("cuda")
         ds_gpu = {n: torch.tensor(ds[n], dtype=torch.float32, device=device) for n in sorted(ds)}
         dir_gpu = {n: torch.tensor(directions[n], dtype=torch.float32, device=device) for n in probe_names}
@@ -104,11 +117,14 @@ def main(activations_dir=None, probes_dir=None, output_dir=None,
 
     pairs = list(combinations(probe_names, 2))
     suffix = "_".join(SHORT.get(n, n) for n in sorted(ds))
-    cache_path = output_dir / f"mahalanobis_cache_{suffix}.pt"
+    cache_model = model_tag or "untagged"
+    cache_path = output_dir / f"mahalanobis_cache_{cache_model}_{suffix}.pt"
 
     if cache_path.exists():
         cached = torch.load(cache_path, weights_only=False)
-        if cached.get("probe_names") == probe_names and cached.get("n_layers") == n_layers:
+        if (cached.get("probe_names") == probe_names
+                and cached.get("n_layers") == n_layers
+                and cached.get("model_tag") == model_tag):
             per_layer_mahal = cached["per_layer_mahal"]
             per_layer_cos = cached["per_layer_cos"]
             print(f"loaded cache: {cache_path}")
@@ -120,7 +136,7 @@ def main(activations_dir=None, probes_dir=None, output_dir=None,
         per_layer_cos = {f"{a}_vs_{b}": [] for a, b in pairs}
 
         for l in range(n_layers):
-            if gpu:
+            if use_gpu:
                 pooled = torch.cat([ds_gpu[n][:, l] for n in sorted(ds)])
                 cov = ledoit_wolf_gpu(pooled)
                 for a, b in pairs:
@@ -140,7 +156,8 @@ def main(activations_dir=None, probes_dir=None, output_dir=None,
                 print(f"  layer {l + 1}/{n_layers}")
 
         torch.save({"per_layer_mahal": per_layer_mahal, "per_layer_cos": per_layer_cos,
-                     "probe_names": probe_names, "n_layers": n_layers}, cache_path)
+                     "probe_names": probe_names, "n_layers": n_layers,
+                     "model_tag": model_tag}, cache_path)
         print(f"saved cache: {cache_path}")
     layers_arr = np.arange(1, n_layers + 1)
     mean_mahal = np.array([np.mean([per_layer_mahal[k][l] for k in per_layer_mahal]) for l in range(n_layers)])
@@ -190,7 +207,7 @@ def main(activations_dir=None, probes_dir=None, output_dir=None,
 
     for tl in top_layers:
         matrix = np.ones((n, n))
-        if gpu:
+        if use_gpu:
             pooled_at = torch.cat([ds_gpu[name][:, tl] for name in sorted(ds)])
             cov_at = ledoit_wolf_gpu(pooled_at)
             for i in range(n):

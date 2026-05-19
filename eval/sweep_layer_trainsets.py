@@ -34,6 +34,9 @@ from config import (
     COLORS,
     SHORT,
     activation_dirname,
+    control_abs_delta,
+    eval_role,
+    is_primary_eval,
     resolve_model,
 )
 from shared_direction import (
@@ -51,6 +54,16 @@ TRAIN_VARIATIONS = {
     "GSS":  ["game_werewolf", "spontaneous_1", "sycophancy_answer"],
     "GSSf": ["game_werewolf", "spontaneous_1", "sycophancy_feedback"],
 }
+
+
+def mean_or_zero(values):
+    values = list(values)
+    return round(float(np.mean(values)), 4) if values else 0.0
+
+
+def min_or_zero(values):
+    values = list(values)
+    return round(float(min(values)), 4) if values else 0.0
 
 
 def run_layer_sweep(cfg, train_diffs_subset, all_train_diffs, val_diffs, directions_cache, train_key):
@@ -80,43 +93,58 @@ def run_layer_sweep(cfg, train_diffs_subset, all_train_diffs, val_diffs, directi
             d = all_eval[name]
             if layer < d["D"].shape[1]:
                 row[name] = round(transfer_auroc(shared, d["D"][:, layer]), 4)
-        aurocs = [row[n] for n in eval_names if n in row]
-        row["mean_auroc"] = round(float(np.mean(aurocs)), 4) if aurocs else 0.0
-        row["min_auroc"] = round(float(min(aurocs)), 4) if aurocs else 0.0
+        primary_aurocs = [row[n] for n in eval_names if n in row and is_primary_eval(n)]
+        control_d = [control_abs_delta(row[n], n) for n in eval_names if n in row and eval_role(n) == "control"]
+        syco_aurocs = [row[n] for n in eval_names if n in row and eval_role(n) == "sycophancy_variant"]
+        row["mean_auroc"] = mean_or_zero(primary_aurocs)
+        row["min_auroc"] = min_or_zero(primary_aurocs)
+        row["control_mean_abs_delta"] = mean_or_zero(control_d)
+        row["sycophancy_variant_mean_auroc"] = mean_or_zero(syco_aurocs)
         layer_rows.append(row)
 
     return layer_rows, eval_names
 
 
-def plot_layer_sweep(layer_rows, eval_names, cfg_label, out_dir):
+def plot_layer_sweep(layer_rows, eval_names, cfg_label, out_dir, role="primary_transfer"):
+    eval_names = [n for n in eval_names if eval_role(n) == role]
+    if not eval_names:
+        return
     sns.set_theme(style="whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
     layers = [r["layer"] for r in layer_rows]
 
     for name in eval_names:
-        aurocs = [r.get(name, np.nan) for r in layer_rows]
+        aurocs = np.array([r.get(name, np.nan) for r in layer_rows], dtype=float)
+        y = np.abs(aurocs - 0.5) if role == "control" else aurocs
         color = COLORS.get(name, "#333333")
         short = SHORT.get(name, name[:6])
         is_val = name in VALIDATION_DATASETS
-        ax.plot(layers, aurocs, color=color, linestyle="--" if is_val else "-",
+        ax.plot(layers, y, color=color, linestyle="--" if is_val else "-",
                 marker="o", markersize=2, linewidth=1.2, label=short, alpha=0.85)
 
-    ax.axhline(0.5, color="black", linestyle="--", linewidth=0.8)
+    ax.axhline(0.0 if role == "control" else 0.5, color="black", linestyle="--", linewidth=0.8)
     ax.set_xlabel("Layer")
-    ax.set_ylabel("AUROC")
-    ax.set_title(cfg_label)
-    ax.set_ylim(0.3, 1.05)
+    ax.set_ylabel("|AUROC - 0.5|" if role == "control" else "AUROC")
+    ax.set_title(f"{cfg_label} / {role}")
+    ax.set_ylim(0, 0.55) if role == "control" else ax.set_ylim(0.3, 1.05)
     ax.legend(loc="lower left", fontsize=7, framealpha=0.7, ncol=2)
     fig.tight_layout()
     safe_name = cfg_label.replace("/", "_").replace("+", "_").replace("=", "")
-    fig.savefig(Path(out_dir) / f"{safe_name}.png", dpi=150)
+    fig.savefig(Path(out_dir) / f"{safe_name}_{role}.png", dpi=150)
     plt.close(fig)
 
 
-def plot_summary_heatmap(summary_rows, dataset_cols, out_path):
+def plot_summary_heatmap(summary_rows, dataset_cols, out_path, role="primary_transfer"):
+    dataset_cols = [d for d in dataset_cols if eval_role(d) == role]
+    if not dataset_cols:
+        return
     sns.set_theme(style="whitegrid")
     labels = [r["label"] for r in summary_rows]
-    mat = np.array([[float(r.get(d, np.nan)) for d in dataset_cols] for r in summary_rows])
+    if role == "control":
+        mat = np.array([[control_abs_delta(float(r[d]), d) if d in r else np.nan
+                         for d in dataset_cols] for r in summary_rows])
+    else:
+        mat = np.array([[float(r.get(d, np.nan)) for d in dataset_cols] for r in summary_rows])
     layers = [int(r["best_layer"]) for r in summary_rows]
 
     annot = np.empty_like(mat, dtype=object)
@@ -128,10 +156,12 @@ def plot_summary_heatmap(summary_rows, dataset_cols, out_path):
     col_labels = [SHORT.get(d, d[:6]) for d in dataset_cols]
     fig, ax = plt.subplots(figsize=(max(10, len(dataset_cols) * 1.3),
                                      max(8, len(summary_rows) * 0.35)))
-    sns.heatmap(mat, annot=annot, fmt="", cmap="RdYlGn", vmin=0.4, vmax=1.0,
+    cmap, vmin, vmax, cbar_label = ("Reds", 0.0, 0.5, "|AUROC - 0.5|") if role == "control" else (
+        "RdYlGn", 0.4, 1.0, "AUROC")
+    sns.heatmap(mat, annot=annot, fmt="", cmap=cmap, vmin=vmin, vmax=vmax,
                 linewidths=0.5, ax=ax, xticklabels=col_labels, yticklabels=labels,
-                cbar_kws={"label": "AUROC"}, annot_kws={"fontsize": 6})
-    ax.set_title("Layer sweep summary: AUROC at best mean layer")
+                cbar_kws={"label": cbar_label}, annot_kws={"fontsize": 6})
+    ax.set_title(f"Layer sweep summary: {role} at best primary-mean layer")
     ax.tick_params(axis="y", labelsize=7)
     plt.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -192,12 +222,15 @@ def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MOD
                 csv_row.update(r)
                 all_csv_rows.append(csv_row)
 
-            plot_layer_sweep(layer_rows, eval_names, f"{var_name} / {label}", var_dir)
+            for role in ["primary_transfer", "control", "sycophancy_variant"]:
+                plot_layer_sweep(layer_rows, eval_names, f"{var_name} / {label}", var_dir, role)
 
             best_idx = int(np.argmax([r["mean_auroc"] for r in layer_rows]))
             best_row = layer_rows[best_idx]
             sr = {"label": f"{var_name}/{label}", "best_layer": best_row["layer"],
-                  "mean_auroc": best_row["mean_auroc"], "min_auroc": best_row["min_auroc"]}
+                  "mean_auroc": best_row["mean_auroc"], "min_auroc": best_row["min_auroc"],
+                  "control_mean_abs_delta": best_row["control_mean_abs_delta"],
+                  "sycophancy_variant_mean_auroc": best_row["sycophancy_variant_mean_auroc"]}
             for n in eval_names:
                 sr[n] = best_row.get(n, np.nan)
                 all_dataset_cols.add(n)
@@ -213,9 +246,10 @@ def main(data_dir=None, activations_dir=None, output_dir=None, model=DEFAULT_MOD
             print(f"  CSV: {csv_path}")
 
     dataset_cols = sorted(all_dataset_cols)
-    heatmap_path = sweep_dir / f"summary_heatmap.png"
-    plot_summary_heatmap(summary_rows, dataset_cols, heatmap_path)
-    print(f"\nSummary heatmap: {heatmap_path}")
+    for role in ["primary_transfer", "control", "sycophancy_variant"]:
+        heatmap_path = sweep_dir / f"summary_heatmap_{role}.png"
+        plot_summary_heatmap(summary_rows, dataset_cols, heatmap_path, role)
+    print(f"\nSummary heatmaps: {sweep_dir}/summary_heatmap_<role>.png")
     print(f"Output: {sweep_dir}")
 
 

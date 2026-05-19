@@ -20,6 +20,7 @@ from config import (
     TRAIN_DATASETS,
     VALIDATION_MAP,
     activation_dirname,
+    eval_result_metadata,
     resolve_dataset_path_for_activation,
     resolve_model,
     tagged_filename,
@@ -92,9 +93,19 @@ def validate(data_dir="../..", activations_dir=None, probe_path=None, output_dir
         labels_aug = np.concatenate([np.ones(n_pairs), np.zeros(n_pairs)])
         auroc = roc_auc_score(labels_aug, scores_aug)
 
+        meta = eval_result_metadata(name, auroc)
         tag = "val" if is_val_of_train_env else "heldout"
-        print(f"  {name} [{tag}]: {n_pairs} pairs, AUROC={auroc:.4f}")
-        results[name] = {"auroc": float(auroc), "n_pairs": n_pairs, "layer": best_layer, "held_out": not is_val_of_train_env}
+        role_msg = f", role={meta['eval_role']}"
+        if meta["control_abs_delta"] is not None:
+            role_msg += f", |AUROC-0.5|={meta['control_abs_delta']:.4f}"
+        print(f"  {name} [{tag}]: {n_pairs} pairs, AUROC={auroc:.4f}{role_msg}")
+        results[name] = {
+            "auroc": float(auroc),
+            "n_pairs": n_pairs,
+            "layer": best_layer,
+            "held_out": not is_val_of_train_env,
+            **meta,
+        }
 
     model_tag = probe.get("model_tag", cli_model_tag)
     out_name = tagged_filename("validation_results.json", model_tag)

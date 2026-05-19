@@ -12,8 +12,18 @@ import numpy as np
 import seaborn as sns
 import torch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import COLORS, DEFAULT_MODEL_TAG, SHORT, pair_color, resolve_model  # noqa: E402
+from config import (  # noqa: E402
+    COLORS,
+    DEFAULT_MODEL_TAG,
+    EVAL_ROLE_DESCRIPTIONS,
+    SHORT,
+    control_abs_delta,
+    eval_role,
+    pair_color,
+    resolve_model,
+)
 from artifact_utils import load_shared_direction, resolve_artifact_path  # noqa: E402
 
 sns.set_theme(style="whitegrid")
@@ -112,15 +122,11 @@ def plot_training_auroc(results, out_dir, ts, method_label):
     plt.close(fig)
 
 
-def plot_validation(val_data, out_dir, ts, method_label):
-    entries = {}
-    for key, info in val_data.items():
-        probe, val_set = key.split("\u2192")
-        entries.setdefault(probe, []).append((val_set, info["auroc"], info["n_pairs"]))
-
+def plot_validation_role(entries, out_dir, ts, method_label, role):
     if not entries:
-        return
+        return None
 
+    suffix = role.replace(" ", "_")
     probes = sorted(entries.keys())
     fig, ax = plt.subplots(figsize=(max(8, len(probes) * 3), 5))
 
@@ -128,25 +134,63 @@ def plot_validation(val_data, out_dir, ts, method_label):
     max_bars = max(len(v) for v in entries.values())
     bar_width = 0.8 / max(max_bars, 1)
 
+    is_control = role == "control"
     for pi, probe in enumerate(probes):
         bars = entries[probe]
-        for bi, (val_set, auroc, n_pairs) in enumerate(bars):
+        for bi, (val_set, auroc, n_pairs, delta) in enumerate(bars):
             x = group_x[pi] + (bi - len(bars) / 2 + 0.5) * bar_width
+            y = delta if is_control else auroc
             color = COLORS.get(probe, "#729ECE")
-            ax.bar(x, auroc, bar_width * 0.9, color=color, alpha=0.85)
-            ax.text(x, auroc + 0.01, f"{auroc:.2f}", ha="center", va="bottom", fontsize=8)
-            ax.text(x, auroc / 2, f"{val_set}\nn={n_pairs}",
-                    ha="center", va="center", fontsize=6.5, color="white", fontweight="bold")
+            ax.bar(x, y, bar_width * 0.9, color=color, alpha=0.85)
+            ax.text(x, y + 0.01, f"{y:.2f}", ha="center", va="bottom", fontsize=8)
+            center = y / 2 if y else 0.02
+            label = f"{val_set}\nn={n_pairs}"
+            if is_control:
+                label = f"{val_set}\nAUROC={auroc:.2f}\nn={n_pairs}"
+            ax.text(x, center, label, ha="center", va="center",
+                    fontsize=6.5, color="white", fontweight="bold")
 
     ax.set_xticks(group_x)
     ax.set_xticklabels([SHORT.get(p, p) for p in probes])
-    ax.set_ylabel("AUROC")
-    ax.set_title(f"{method_label} Validation Results by Probe")
-    ax.set_ylim(0, 1.1)
-    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    if is_control:
+        ax.set_ylabel("|AUROC - 0.5|")
+        ax.set_ylim(0, 0.55)
+        ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    else:
+        ax.set_ylabel("AUROC")
+        ax.set_ylim(0, 1.1)
+        ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    description = EVAL_ROLE_DESCRIPTIONS.get(role, role)
+    ax.set_title(f"{method_label} Validation: {role} ({description})")
     fig.tight_layout()
-    fig.savefig(out_dir / f"validation_results_{ts}.png", dpi=150)
+    out_path = out_dir / f"validation_results_{suffix}_{ts}.png"
+    fig.savefig(out_path, dpi=150)
     plt.close(fig)
+    return out_path
+
+
+def plot_validation(val_data, out_dir, ts, method_label):
+    entries = {}
+    for key, info in val_data.items():
+        probe, val_set = key.split("\u2192")
+        role = info.get("eval_role", eval_role(val_set))
+        delta = info.get("control_abs_delta")
+        if delta is None:
+            delta = control_abs_delta(info["auroc"], role)
+        entries.setdefault(role, {}).setdefault(probe, []).append(
+            (val_set, info["auroc"], info["n_pairs"], delta)
+        )
+
+    if not entries:
+        return []
+
+    role_order = ["primary_transfer", "control", "sycophancy_variant"]
+    paths = []
+    for role in role_order + sorted(set(entries) - set(role_order)):
+        path = plot_validation_role(entries.get(role, {}), out_dir, ts, method_label, role)
+        if path is not None:
+            paths.append(path)
+    return paths
 
 
 def result_path(out_dir, base_name, model_tag, allow_untagged_fallback=False):
@@ -184,8 +228,8 @@ def main(probes_dir=".", model=DEFAULT_MODEL_TAG, method_label="Probe", allow_un
 
     val = load_json(result_path(out_dir, "validation_results.json", model_tag, allow_untagged_fallback))
     if val:
-        plot_validation(val, out_dir, ts, method_label)
-        print("plot 4: validation_results")
+        paths = plot_validation(val, out_dir, ts, method_label)
+        print(f"plot 4: validation_results by role ({len(paths)} file(s))")
     else:
         print("skipping validation: validation_results.json not found")
 

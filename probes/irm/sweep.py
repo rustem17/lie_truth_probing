@@ -25,6 +25,9 @@ from config import (
     TRAIN_DATASETS,
     VALIDATION_DATASETS,
     activation_dirname,
+    control_abs_delta,
+    eval_role,
+    is_primary_eval,
     resolve_dataset_path_for_activation,
     resolve_model,
     validate_dataset_provenance,
@@ -83,6 +86,18 @@ def eval_heldout_at_layer(direction, layer_idx, heldout):
     return results
 
 
+def summarize_heldout_scores(scores):
+    primary = [v for name, v in scores.items() if is_primary_eval(name)]
+    controls = [control_abs_delta(v, name) for name, v in scores.items() if eval_role(name) == "control"]
+    syco = [v for name, v in scores.items() if eval_role(name) == "sycophancy_variant"]
+    return {
+        "primary_mean": float(np.mean(primary)) if primary else 0.0,
+        "primary_min": float(min(primary)) if primary else 0.0,
+        "control_mean_abs_delta": float(np.mean(controls)) if controls else 0.0,
+        "sycophancy_variant_mean": float(np.mean(syco)) if syco else 0.0,
+    }
+
+
 def sweep(data_dir="../..", activations_dir=None, output_dir=".",
           layer_min=10, layer_max=50, model=DEFAULT_MODEL_TAG):
     model_tag, _ = resolve_model(model) if model else ("", "")
@@ -125,8 +140,10 @@ def sweep(data_dir="../..", activations_dir=None, output_dir=".",
             heldout_per_layer = {}
             for layer in range(layer_lo, layer_hi):
                 h = eval_heldout_at_layer(directions[layer], layer, heldout)
+                summary = summarize_heldout_scores(h)
                 heldout_per_layer[layer] = {
-                    "mean": float(np.mean(list(h.values()))) if h else 0.0,
+                    "mean": summary["primary_mean"],
+                    **summary,
                     "per_dataset": h,
                 }
 
@@ -139,6 +156,7 @@ def sweep(data_dir="../..", activations_dir=None, output_dir=".",
 
             heldout_aurocs = heldout_per_layer[best_layer_idx]["per_dataset"]
             heldout_mean = heldout_per_layer[best_layer_idx]["mean"]
+            heldout_summary = summarize_heldout_scores(heldout_aurocs)
 
             result = {
                 "env_combo": combo_name,
@@ -150,6 +168,10 @@ def sweep(data_dir="../..", activations_dir=None, output_dir=".",
                 "train_per_env": train_per_env,
                 "heldout_aurocs": heldout_aurocs,
                 "heldout_mean_auroc": heldout_mean,
+                "heldout_primary_mean_auroc": heldout_summary["primary_mean"],
+                "heldout_primary_min_auroc": heldout_summary["primary_min"],
+                "heldout_control_mean_abs_delta": heldout_summary["control_mean_abs_delta"],
+                "heldout_sycophancy_variant_mean_auroc": heldout_summary["sycophancy_variant_mean"],
                 "heldout_per_layer": {str(l + 1): heldout_per_layer[l]["mean"] for l in heldout_per_layer},
             }
             all_results.append(result)

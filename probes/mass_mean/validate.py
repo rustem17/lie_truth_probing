@@ -26,6 +26,7 @@ from config import (
     DEFAULT_MODEL_TAG,
     VALIDATION_MAP,
     activation_dirname,
+    eval_result_metadata,
     resolve_dataset_path_for_activation,
     resolve_model,
     tagged_filename,
@@ -112,13 +113,18 @@ def validate(data_dir="../..", activations_dir=None, probes_dir=".", model=DEFAU
             scores = D @ direction
             auroc, dropped_nonfinite = augmented_auroc_from_scores(scores)
 
+            meta = eval_result_metadata(val_name, auroc)
             drop_msg = f", dropped_nonfinite={dropped_nonfinite}" if dropped_nonfinite else ""
-            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}{drop_msg}")
+            role_msg = f", role={meta['eval_role']}"
+            if meta["control_abs_delta"] is not None:
+                role_msg += f", |AUROC-0.5|={meta['control_abs_delta']:.4f}"
+            print(f"  -> {val_name}: {n_pairs} pairs, AUROC={auroc:.4f}{drop_msg}{role_msg}")
             results[f"{probe_name}→{val_name}"] = {
                 "auroc": float(auroc),
                 "n_pairs": n_pairs,
                 "n_dropped_nonfinite": dropped_nonfinite,
                 "layer": best_layer,
+                **meta,
             }
 
     out_fname = f"validation_results_{model_tag}.json" if model_tag else "validation_results.json"

@@ -321,12 +321,15 @@ Run the same analysis plot suite for every non-IRM method with a wrapper:
 ```bash
 bash probes/make_all_plots.sh
 bash probes/make_all_plots.sh --model gemma-4-31b-it --datasets instructed_system_prompt,sycophancy_answer --layer 33
+bash probes/make_all_plots.sh --model gemma-4-31b-it --gpu
 ```
 
 The wrapper covers `mass_mean`, `mass_mean_iid`, `paired_pca`, `contrastive`,
 and `mahalanobis_lda`. Methods without `shared_direction_{tag}.pt` still run
 their local training/validation plots and skip the shared-direction analysis
-suite instead of failing. IRM keeps its separate sweep heatmap plotter.
+suite instead of failing. `--gpu` is forwarded only to the Mahalanobis analysis
+plot, preserving the same outputs while using the torch/CUDA covariance path
+when available. IRM keeps its separate sweep heatmap plotter.
 
 Plot scripts require tagged artifacts for the requested model. Legacy untagged
 artifacts are ignored unless you explicitly pass

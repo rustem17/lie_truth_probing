@@ -19,3 +19,4 @@ eval/results/*.pt
 eval/results/position_sweep_*/
 eval/results/pos_sweep_*/
 autoprobe/results/
+artifacts_from_remote_machine/
